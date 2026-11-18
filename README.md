@@ -6,6 +6,16 @@
 
 ![英文文献阅读器界面](docs/preview.svg)
 
+| 功能总览 | 配色一览 |
+| --- | --- |
+| ![九个功能](promo/02-features.png) | ![六套界面配色与三套页面配色](promo/03-tones.png) |
+
+| 五步上手 | 方形预览 |
+| --- | --- |
+| ![从拖进 PDF 到留下批注](promo/04-workflow.png) | ![方形预览图](promo/05-square.png) |
+
+宣传文案（中英双语的短版 / 长版）与图片生成脚本见 [`promo/`](promo/)。
+
 ## 安装
 
 要求 DSH 0.2.x（`dsh.bundle` 型插件）。
