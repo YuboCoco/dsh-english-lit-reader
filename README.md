@@ -10,14 +10,7 @@
 
 要求 DSH 0.2.x（`dsh.bundle` 型插件）。
 
-```bash
-# 在 DSH 的 profile 目录里安装
-pnpm add dsh-english-lit-reader
-```
-
-或者在 Harness 的「设置 → 插件」里搜索 `dsh-english-lit-reader` 安装。安装后**重启 Harness**，会话页顶部会多出一个「文献阅读」标签页。
-
-手动安装（从源码）：
+从源码安装（当前方式）：
 
 ```bash
 git clone https://github.com/yubo1214/dsh-english-lit-reader.git
@@ -25,7 +18,16 @@ cd dsh-english-lit-reader
 pnpm install
 ```
 
-把该目录作为 bundle 装进 profile 即可（`package.json` 里已声明 `dsh.bundle.patch`，Harness 的插件管理器会读它）。
+然后用 Harness 的插件管理器把该目录作为 bundle 装进 profile——`package.json` 已声明 `dsh.bundle.patch`，管理器会读取它。装好以后**重启 Harness**，会话页顶部会多出一个「文献阅读」标签页。
+
+如果你把这类 link 安装换成版本安装：
+
+```bash
+# 在 DSH 的 profile 目录里
+pnpm add github:yubo1214/dsh-english-lit-reader
+```
+
+> npm 上暂未发布，所以暂时不能 `pnpm add dsh-english-lit-reader`，也不能在「设置 → 插件」里按名字搜索到。发布后这段会更新。
 
 ## 三个入口
 
