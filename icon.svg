@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="6" y="8" width="52" height="48" rx="8" fill="var(--dsw-alias-bg-layer-1, #ffffff)" stroke="var(--dsw-alias-border-l2, #c9d2de)" stroke-width="2"/>
+  <path d="M14 20h22M14 28h30M14 36h26M14 44h18" stroke="var(--dsw-alias-brand-primary, #247bbf)" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+  <g transform="translate(34 30)">
+    <rect x="0" y="0" width="22" height="18" rx="4" fill="var(--dsw-alias-bg-overlay, #ffffff)" stroke="var(--dsw-alias-brand-primary, #247bbf)" stroke-width="2"/>
+    <path d="M5 6h12M5 10h9" stroke="var(--dsw-alias-label-primary, #1f2933)" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M11 18l-3 5 6-5" fill="var(--dsw-alias-bg-overlay, #ffffff)" stroke="var(--dsw-alias-brand-primary, #247bbf)" stroke-width="2" stroke-linejoin="round"/>
+  </g>
+</svg>

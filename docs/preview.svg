@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="Reader window: a PDF page with one highlighted sentence on the left, an arrow pointing to a Chinese translation card on the right, above a row of function cards.">
+  <defs>
+    <clipPath id="elrPageClip">
+      <rect x="52" y="86" width="220" height="168" rx="9" />
+    </clipPath>
+    <clipPath id="elrCardClip">
+      <rect x="332" y="86" width="256" height="168" rx="9" />
+    </clipPath>
+  </defs>
+
+  <!-- window -->
+  <rect x="32" y="32" width="576" height="248" rx="14" fill="#f4f7fb" stroke="#c2cfe0" stroke-width="2" />
+  <rect x="32" y="32" width="576" height="36" rx="14" fill="#e2eaf5" />
+  <rect x="32" y="54" width="576" height="14" fill="#e2eaf5" />
+  <line x1="34" y1="68" x2="606" y2="68" stroke="#c2cfe0" stroke-width="2" />
+
+  <!-- toolbar controls -->
+  <rect x="48" y="42" width="38" height="15" rx="7.5" fill="#c9d8ea" />
+  <rect x="94" y="42" width="30" height="15" rx="7.5" fill="#d6e2f0" />
+  <rect x="132" y="42" width="30" height="15" rx="7.5" fill="#d6e2f0" />
+  <rect x="176" y="42" width="52" height="15" rx="7.5" fill="#d6e2f0" />
+  <rect x="498" y="42" width="94" height="15" rx="7.5" fill="#2f74b8" />
+
+  <!-- PDF page -->
+  <rect x="52" y="86" width="220" height="168" rx="9" fill="#ffffff" stroke="#ccd7e5" stroke-width="2" />
+  <g clip-path="url(#elrPageClip)">
+    <rect x="68" y="102" width="150" height="7" rx="3.5" fill="#5b6b80" />
+    <rect x="68" y="118" width="188" height="5" rx="2.5" fill="#c7d2e0" />
+    <rect x="68" y="130" width="176" height="5" rx="2.5" fill="#c7d2e0" />
+    <rect x="68" y="142" width="184" height="5" rx="2.5" fill="#c7d2e0" />
+    <!-- highlighted sentence -->
+    <rect x="64" y="156" width="196" height="20" rx="4" fill="#ffe066" />
+    <rect x="70" y="163" width="184" height="6" rx="3" fill="#4a3c07" />
+    <rect x="68" y="186" width="180" height="5" rx="2.5" fill="#c7d2e0" />
+    <rect x="68" y="198" width="168" height="5" rx="2.5" fill="#c7d2e0" />
+    <rect x="68" y="210" width="184" height="5" rx="2.5" fill="#c7d2e0" />
+    <rect x="68" y="222" width="120" height="5" rx="2.5" fill="#c7d2e0" />
+  </g>
+
+  <!-- selection handles -->
+  <rect x="60" y="153" width="4" height="26" rx="2" fill="#2f74b8" />
+
+  <!-- arrow -->
+  <line x1="282" y1="170" x2="316" y2="170" stroke="#2f74b8" stroke-width="3" stroke-linecap="round" />
+  <path d="M312 162 L324 170 L312 178 Z" fill="#2f74b8" />
+
+  <!-- translation card -->
+  <rect x="332" y="86" width="256" height="168" rx="9" fill="#ffffff" stroke="#ccd7e5" stroke-width="2" />
+  <g clip-path="url(#elrCardClip)">
+    <rect x="332" y="86" width="256" height="26" fill="#e8f0fb" />
+    <rect x="344" y="95" width="62" height="8" rx="4" fill="#2f74b8" />
+    <rect x="520" y="95" width="56" height="8" rx="4" fill="#c7d2e0" />
+
+    <rect x="344" y="124" width="52" height="6" rx="3" fill="#9fb0c6" />
+    <rect x="344" y="138" width="228" height="7" rx="3.5" fill="#5b6b80" />
+    <rect x="344" y="154" width="212" height="7" rx="3.5" fill="#5b6b80" />
+    <rect x="344" y="170" width="220" height="7" rx="3.5" fill="#5b6b80" />
+    <rect x="344" y="186" width="164" height="7" rx="3.5" fill="#5b6b80" />
+
+    <rect x="344" y="212" width="60" height="18" rx="9" fill="#2f74b8" />
+    <rect x="358" y="219" width="32" height="5" rx="2.5" fill="#eaf3fc" />
+  </g>
+
+  <!-- function card row -->
+  <rect x="52" y="246" width="128" height="18" rx="6" fill="#ffffff" stroke="#ccd7e5" stroke-width="1.5" />
+  <rect x="60" y="252" width="34" height="6" rx="3" fill="#c2456f" />
+  <rect x="100" y="252" width="70" height="6" rx="3" fill="#dbe3ee" />
+
+  <rect x="190" y="246" width="128" height="18" rx="6" fill="#ffffff" stroke="#ccd7e5" stroke-width="1.5" />
+  <rect x="198" y="252" width="34" height="6" rx="3" fill="#2f8555" />
+  <rect x="238" y="252" width="70" height="6" rx="3" fill="#dbe3ee" />
+
+  <rect x="328" y="246" width="128" height="18" rx="6" fill="#ffffff" stroke="#ccd7e5" stroke-width="1.5" />
+  <rect x="336" y="252" width="34" height="6" rx="3" fill="#9a6b12" />
+  <rect x="376" y="252" width="70" height="6" rx="3" fill="#dbe3ee" />
+
+  <rect x="466" y="246" width="122" height="18" rx="6" fill="#ffffff" stroke="#ccd7e5" stroke-width="1.5" />
+  <rect x="474" y="252" width="34" height="6" rx="3" fill="#2f74b8" />
+  <rect x="514" y="252" width="64" height="6" rx="3" fill="#dbe3ee" />
+</svg>

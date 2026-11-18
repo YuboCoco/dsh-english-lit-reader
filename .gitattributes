@@ -1,0 +1,10 @@
+# Keep sources LF everywhere: the plugin is loaded as a JS module, and the
+# vendor bundles are redistributed byte-for-byte, so neither may be rewritten
+# on checkout.
+* text=auto eol=lf
+
+# Vendored third-party distribution files are never line-ending converted.
+vendor/** -text
+*.woff2 binary
+*.png binary
+*.ico binary

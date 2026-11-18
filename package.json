@@ -1,0 +1,70 @@
+{
+  "name": "dsh-english-lit-reader",
+  "version": "1.0.50",
+  "type": "module",
+  "description": "Read English papers in DeepSeek Harness with instant selection translation, structured summaries of innovations and technical approach, resolved references, formula and term explanations.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "pdf",
+    "pdfjs",
+    "translation",
+    "paper",
+    "academic",
+    "literature"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yubo1214/dsh-english-lit-reader.git"
+  },
+  "homepage": "https://github.com/yubo1214/dsh-english-lit-reader#readme",
+  "bugs": {
+    "url": "https://github.com/yubo1214/dsh-english-lit-reader/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./vendor/*": "./vendor/*"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "docs/*.md",
+    "docs/*.svg",
+    "vendor/*.js",
+    "vendor/*.css",
+    "vendor/PDFJS-LICENSE",
+    "vendor/katex/katex.min.js",
+    "vendor/katex/katex.min.css",
+    "vendor/katex/KATEX-LICENSE",
+    "vendor/katex/fonts/*.woff2",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}
