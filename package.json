@@ -17,11 +17,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yubo1214/dsh-english-lit-reader.git"
+    "url": "git+https://github.com/YuboCoco/dsh-english-lit-reader.git"
   },
-  "homepage": "https://github.com/yubo1214/dsh-english-lit-reader#readme",
+  "homepage": "https://github.com/YuboCoco/dsh-english-lit-reader#readme",
   "bugs": {
-    "url": "https://github.com/yubo1214/dsh-english-lit-reader/issues"
+    "url": "https://github.com/YuboCoco/dsh-english-lit-reader/issues"
   },
   "exports": {
     ".": "./index.js",

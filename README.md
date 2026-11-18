@@ -13,10 +13,11 @@
 从源码安装（当前方式）：
 
 ```bash
-git clone https://github.com/yubo1214/dsh-english-lit-reader.git
+git clone https://github.com/YuboCoco/dsh-english-lit-reader.git
 cd dsh-english-lit-reader
-pnpm install
 ```
+
+这个包没有运行时依赖（pdf.js 与 KaTeX 已按发行版打包在 `vendor/` 里），不需要 `pnpm install`。
 
 然后用 Harness 的插件管理器把该目录作为 bundle 装进 profile——`package.json` 已声明 `dsh.bundle.patch`，管理器会读取它。装好以后**重启 Harness**，会话页顶部会多出一个「文献阅读」标签页。
 
@@ -24,7 +25,7 @@ pnpm install
 
 ```bash
 # 在 DSH 的 profile 目录里
-pnpm add github:yubo1214/dsh-english-lit-reader
+pnpm add github:YuboCoco/dsh-english-lit-reader
 ```
 
 > npm 上暂未发布，所以暂时不能 `pnpm add dsh-english-lit-reader`，也不能在「设置 → 插件」里按名字搜索到。发布后这段会更新。
