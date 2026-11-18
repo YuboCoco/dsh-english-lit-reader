@@ -38,6 +38,7 @@
     "icon.svg",
     "docs/*.md",
     "docs/*.svg",
+    "docs/*.png",
     "vendor/*.js",
     "vendor/*.css",
     "vendor/PDFJS-LICENSE",
