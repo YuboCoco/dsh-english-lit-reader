@@ -5,6 +5,19 @@
 版本号规则：`x.y.z`，其中 `y` 每轮需求 +1。
 
 ---
+### v51 · 1.0.51
+
+**打开 PDF 报 `The API version "6.3.289" does not match the Worker version "3.11.174"`**
+
+- 现象：在装了插件的 Harness 里打开任意 PDF，直接弹「无法打开该 PDF」并带上面那句版本不匹配。
+- 根因：`ensurePdfJs()` 当时的写法是 `if (!globalThis.pdfjsLib) await load('pdf.min.js')`。宿主页面自己的 PDF 预览已经把一个 **6.3.289** 的 `pdfjsLib` 放到了全局，于是这一行判断为真、**跳过了加载我们自己那份 3.11.174**；但紧接着仍然执行 `globalThis.pdfjsLib.GlobalWorkerOptions.workerSrc = asset('pdf.worker.min.js')`，把 3.11.174 的 worker 配给了 6.3.289 的 API。worker 一启动就比对版本并抛错——报错里的两个数字正好一个来自宿主、一个来自我们的 `vendor/`。
+- 做法一：**永远加载自己那份**，不再看全局有没有。两个 UMD 包都会无条件把自己的导出写到 `globalThis`，所以「加载」本身就能拿到槽位；加载前先把页面原值快照下来、加载完再还回去，宿主的预览因此不受影响。另外加两道断言：载入后 `globalThis.pdfjsLib` 必须**换了对象**（否则说明浏览器命中缓存、旧 bundle 没生效，此时静默复用会重新引入同一个 bug），且 `version` 必须正好是 `3.11.174`。
+- 做法二：**私有 worker**。`GlobalWorkerOptions` 是这个库实例上的一个对象，宿主改它自己的那份时，如果两处共享同一个对象就会被连带改掉。所以不再依赖 `workerSrc`，而是用 `new lib.PDFWorker({ port: new Worker(asset('pdf.worker.min.js')) })` 建一个属于我们的 worker，并把它显式传给 `getDocument({ worker })`；`disposeViewer()` 里一并 `destroy()`，随文档生命周期起落。
+- 做法三：`pdfjsWorker` 这个全局（fake-worker 回退时读的）也在 `ensurePdfJs` 期间被移走、结束时还原。原先是直接 `delete` 掉——那等于把宿主的回退能力也删了，改成快照/还原。
+- 验证：静态校验 43 项全过（含 `vendor/` 三份文件的版本字符串、`PDFWorker` 构造函数确实接受 `port`、worker 文件里 `WorkerMessageHandler.initializeFromPort(self)` 的自初始化路径）；VM 用例模拟「页面上已有一个 6.3.289 的 `pdfjsLib`」，断言仍然加载我们那份、`workerSrc` 指向我们的 worker、结束后宿主全局原样还原、第二次调用复用缓存、缓存命中导致全局未替换时抛诊断、版本不符时抛错、`localWorker()` 建出的 worker 带 `port` 且复用同一实例。
+- 副作用说明：这版起 pdf.js 的加载不再「借用宿主的库」，所以每次进入阅读器都会多加载一次 `pdf.min.js`（320 KB，走浏览器缓存）。换来的是版本永远自洽。
+
+---
 ### v47 · 1.0.50
 
 **界面配色加入淡粉色（v47）**

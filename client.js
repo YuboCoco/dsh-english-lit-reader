@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     const PDFCSS_ID = 'english-lit-reader-pdfcss';
     const KATEXCSS_ID = 'english-lit-reader-katexcss';
     // Cache-buster: a stale browser bundle may still point at the old asset set.
-    const ASSET_V = '?v=1.0.50';
+    const ASSET_V = '?v=1.0.51';
     const asset = (name) => VENDOR + name + ASSET_V;
 
     const SIDE_DEFAULT = 380;
@@ -1178,8 +1178,32 @@ window.__ModuleLoader__.load({
       run(undefined, undefined, undefined);
     }
 
+    // (v51) The host page may already publish its own `pdfjsLib` (the app's
+    // built-in PDF preview does). Reusing it is not safe: we pair the API with
+    // OUR vendored worker, and a newer API against a 3.11.174 worker throws
+    // `The API version "6.3.289" does not match the Worker version "3.11.174"`.
+    //
+    // So we always load our own copy. Both UMD bundles assign their export onto
+    // globalThis unconditionally, so loading is enough to take the slot; we
+    // snapshot the page's values first and hand them back afterwards, leaving
+    // the host's own viewer untouched. The private binding is what we use.
+    const PDFJS_VERSION = '3.11.174';
     let pdfJsPromise = null;
+    let ownPdfJs = null;
+
+    const takeGlobal = (name) => {
+      const g = globalThis;
+      const had = name in g;
+      const value = g[name];
+      return () => {
+        try {
+          if (had) g[name] = value; else delete g[name];
+        } catch (_) {}
+      };
+    };
+
     function ensurePdfJs() {
+      if (ownPdfJs) return Promise.resolve(ownPdfJs);
       if (pdfJsPromise) return pdfJsPromise;
       pdfJsPromise = (async () => {
         installPdfCss();
@@ -1188,14 +1212,40 @@ window.__ModuleLoader__.load({
           try { await loadScript(src); }
           catch (error) { await loadScriptEval(src); }
         };
-        if (!globalThis.pdfjsLib) await load('pdf.min.js');
-        if (!globalThis.pdfjsLib) throw new Error('pdf.js core is unavailable');
-        globalThis.pdfjsLib.GlobalWorkerOptions.workerSrc = asset('pdf.worker.min.js');
-        if (!globalThis.pdfjsViewer) await load('pdf_viewer.js');
-        if (!globalThis.pdfjsViewer || !globalThis.pdfjsViewer.PDFViewer) {
-          throw new Error('pdf.js viewer is unavailable');
+        const beforeLib = globalThis.pdfjsLib;
+        const beforeViewer = globalThis.pdfjsViewer;
+        const restoreLib = takeGlobal('pdfjsLib');
+        const restoreViewer = takeGlobal('pdfjsViewer');
+        // `pdfjsWorker` is the global the fake-worker fallback reads. A foreign
+        // one reintroduces the same version mismatch, so it is cleared while our
+        // copy loads and put back afterwards — the host's own viewer keeps its
+        // fallback intact.
+        const restoreWorker = takeGlobal('pdfjsWorker');
+        let lib = null;
+        let V = null;
+        try {
+          await load('pdf.min.js');
+          lib = globalThis.pdfjsLib;
+          if (!lib) throw new Error('pdf.js core is unavailable');
+          if (lib === beforeLib) throw new Error('pdf.js core was not replaced by the bundled copy');
+          if (lib.version !== PDFJS_VERSION) {
+            throw new Error('pdf.js core version ' + lib.version + ' (expected ' + PDFJS_VERSION + ')');
+          }
+          // Our own object, not the host's: this assignment cannot leak.
+          lib.GlobalWorkerOptions.workerSrc = asset('pdf.worker.min.js');
+          // The viewer resolves its core through the global at module-eval
+          // time (`module.exports = globalThis.pdfjsLib`), so it must be loaded
+          // while OUR copy is the visible one.
+          await load('pdf_viewer.js');
+          V = globalThis.pdfjsViewer;
+          if (!V || !V.PDFViewer) throw new Error('pdf.js viewer is unavailable');
+        } finally {
+          restoreLib();
+          restoreViewer();
+          restoreWorker();
         }
-        return { pdfjsLib: globalThis.pdfjsLib, V: globalThis.pdfjsViewer };
+        ownPdfJs = { pdfjsLib: lib, V };
+        return ownPdfJs;
       })().catch((error) => { pdfJsPromise = null; throw error; });
       return pdfJsPromise;
     }
@@ -2768,6 +2818,26 @@ window.__ModuleLoader__.load({
       // setDocument() hit an empty `_pages` array (that is also why 单双栏 stopped
       // working after a switch). A fresh viewer per document sidesteps the whole
       // reuse path: nothing of the old document survives.
+      // (v51) One dedicated worker for OUR pdf.js copy, owned by us and torn
+      // down with the viewer. Handing it over as `workerPort` is deliberate:
+      // `GlobalWorkerOptions.workerSrc` is a property of the shared global this
+      // library instance exposes, so if the host page later touches its own
+      // `pdfjsLib.GlobalWorkerOptions`, our document could end up paired with a
+      // foreign worker and fail with a version mismatch. A private port cannot
+      // be captured that way.
+      const workerRef = { current: null };
+      const localWorker = () => {
+        const lib = (pdfStateRef.current && pdfStateRef.current.pdfjsLib) || (ownPdfJs && ownPdfJs.pdfjsLib);
+        if (!lib || typeof Worker !== 'function') return null;
+        if (workerRef.current) return workerRef.current;
+        try {
+          workerRef.current = new lib.PDFWorker({ name: 'english-lit-reader', port: new Worker(asset('pdf.worker.min.js')) });
+        } catch (_) {
+          workerRef.current = null;
+        }
+        return workerRef.current;
+      };
+
       const disposeViewer = () => {
         const s = pdfStateRef.current;
         pdfStateRef.current = null;
@@ -2775,6 +2845,11 @@ window.__ModuleLoader__.load({
         if (s) {
           try { s.viewer.setDocument(null); } catch (_) {}
           try { s.viewer.cleanup(); } catch (_) {}
+        }
+        const worker = workerRef.current;
+        workerRef.current = null;
+        if (worker) {
+          try { worker.destroy(); } catch (_) {}
         }
         if (viewerElRef.current) {
           try { viewerElRef.current.textContent = ''; } catch (_) {}
@@ -2915,7 +2990,11 @@ window.__ModuleLoader__.load({
           }
           const state = await ensureViewer();
           if (cancelled) return;
-          const task = state.pdfjsLib.getDocument({ data: new Uint8Array(buf) });
+          // (v51) Ask for our own worker explicitly. Without it pdf.js falls
+          // back to `GlobalWorkerOptions.workerSrc`, which a foreign `pdfjsLib`
+          // on the page may have rewritten to ITS worker.
+          const worker = localWorker();
+          const task = state.pdfjsLib.getDocument({ data: new Uint8Array(buf), worker: worker || undefined });
           const pdf = await task.promise;
           if (cancelled) { try { pdf.destroy(); } catch (_) {} return; }
           pdfDocRef.current = pdf;
