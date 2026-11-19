@@ -5,6 +5,20 @@
 版本号规则：`x.y.z`，其中 `y` 每轮需求 +1。
 
 ---
+### v52 · 1.0.52
+
+**参考文献重做：先出原文条目，再逐批补标题与地址**
+
+- 现象：一份 12 页的论文，参考文献里明明有 DOI，却整列显示「未找到」；有的条目明明就是同一篇论文，却被判成不匹配；偶尔加载一会儿就整列空白。
+- 根因一（限流被当成「没有」）：Crossref 对匿名请求限到每秒 3 次，旧代码并发 3、无间隔、无重试，实测连发得到 `200, 429, 429, 429`；而它的失败分支是 `if (response.statusCode !== 200) { done(null); return; }`，于是 429 和「这篇论文确实没有 DOI」走了同一条路，界面上都写「未找到」。另外 UA 里写的是 `mailto:noreply@example.com` 这种假地址，Crossref 对它的额度更低；换成真实邮箱后实测 10/10 全部 200。
+- 根因二（单向覆盖把同一篇文章判成不同）：`titleScore()` 只拿较短的一方的词表去较长方里找覆盖率，于是 `Generative Adversarial Nets` 对 `Generative Adversarial Networks` 只有 0.67（判失败），而 `A Survey of Deep Learning` 对 `Deep Learning` 却是 1.00（判通过）。现在取 `Math.min(forward, backward)`，并且只对真正的屈折变化（`nets`/`networks`）放行，`net` 仍不匹配 `network`；单边带 survey/review/erratum 这类限定词时封顶 0.7。
+- 根因三（把作者和年份塞进标题检索）：Crossref 的 `query.bibliographic` 是标题字段，把作者和年份一起塞进去反而把真论文挤下去；OpenAlex 的 `search=` 是模糊全文检索，返回一堆「差一点」的标题。现在作者走 Crossref 自己的 `query.author`，OpenAlex 换用 `filter=title.search:`。
+- 根因四（文本提取把换行丢了）：`extractText()` 原本是 `items.map(it => it.str).join(' ')`，整页变成一行，`[1] … [2] …` 首尾相接，任何按行分条的解析都不可能正确。现在按 pdf.js 的 `hasEOL` 重建行；没有 `hasEOL` 的页面按 baseline 分组，检测到明确的中间栏缝时按栏序输出（左栏读完再读右栏），单栏页面不会被一行偏宽的内容打乱顺序。
+- 做法：参考文献改成三阶段，且**第一阶段完全不联网、不调模型**。① `/references/segment` 用纯规则定位 `References`/`Bibliography`/`Works Cited` 独立标题，遇到 `Appendix`/`Acknowledgements`/`Supplementary` 就结束（长附录不会被当成参考文献），按行首编号或作者—年份分条，每条派生**稳定 id**（`r1`、`r2`…，按位置，重跑不变）并保留原编号、页码范围与原文；分不清时整段保留并提示，由用户在模型兜底（`useModel`）下再试，模型只被要求返回**行范围**，程序据此切片，越界或乱序的范围一律丢弃。② `/references/fields` 只给模型发缺标题的条目，每批 10 条、限字符，返回按 id 回填，缺答案的条目原样留下。③ `/references/resolve` 先用正则从原文里挖 DOI/arXiv 号（含换行折断的情况），挖到的标「原文提供」且**不发任何请求**；其余按标题+作者查 Crossref，分数不到 0.9 才补查 OpenAlex；两个不同 DOI 分差 <0.12 时标「待确认」而不是自动挂链；Crossref 的 `posted-content`（预印本镜像，标题和作者都对但年份对不上）永远不能自行升为「已匹配」。429/5xx/超时归「暂时失败」，与「无匹配」分开显示，可点「重试失败项」只重跑失败或未处理的条目。每次请求记下论文 id 与序号，切换论文后到达的响应直接丢弃，不会把 A 的链接写到 B 上。旧缓存只有 `found`，那是老的单向匹配器写的，读出来降级为「旧缓存」并重新核对，不当成已验证。
+- 验证：`node --check` 两个文件均通过；Host 解析器行为测试 20/20（编号目录、作者—年份目录、跨行续行、附录不吞、DOI/arXiv 即出链、无法分条时整段保留、`titleScore` 的四个固定样例）；客户端流水线 35/35（三阶段顺序、`provided` 条目既不进字段批次也不进地址批次、切换论文丢弃响应、字段/地址失败保留已显示条目、空结果不发起后续请求、旧缓存降级、重试只重跑指定 id 且保留其余行）；实跑 Host：`/references/segment` 3 条 200，`/references/resolve` 真实标题得到 `matched`（ResNet → `10.1109/cvpr.2016.90`）、`confirm`（GAN → arXiv 镜像，分数 0.75，需人工确认）、`retry`（Attention 的 Crossref 结果全是 2025 年的投稿镜像，按规则拒绝采信）。
+- 副作用：条目多时地址阶段会变慢——全局串行 + 每条至少间隔 620ms、限流时退避重试，3 条约 28 秒。这是刻意的取舍：宁可慢，也不要把限流当成「没有 DOI」写进缓存。
+
+---
 ### v51 · 1.0.51
 
 **打开 PDF 报 `The API version "6.3.289" does not match the Worker version "3.11.174"`**

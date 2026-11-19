@@ -142,32 +142,82 @@ const TERM_SYSTEM = [
 // (v21 #1) Bibliography extraction. The model only parses and translates - it is
 // explicitly forbidden from inventing an address, because the Host resolves the
 // address itself and the UI prints 未找到 when that resolution fails.
-const REFERENCES_SYSTEM = [
-  "You are a research assistant extracting the bibliography of an English academic paper.",
-  "You are given the reference-section text of the paper. Extract EVERY reference entry, in the order it appears.",
+// (v52) Field extraction, batched. The old prompt asked for the WHOLE list as one
+// JSON array, which is exactly what made 81 entries come back as 80 (or as zero
+// when a closing bracket was lost). Each call now receives a small batch that
+// already carries stable ids, and every answer is validated per id, so one bad
+// batch can never take the whole column down with it.
+const REFERENCE_FIELDS_SYSTEM = [
+  "You are a research assistant extracting citation metadata from a bibliography.",
+  "You receive a JSON array of batches. Each element has an id, the verbatim entry text, and optional context.",
   "Output ONLY a JSON array - no prose, no explanation, no code fences.",
-  "Each element must be an object with exactly these four string keys:",
-  '{"en": "...", "zh": "...", "venue": "...", "year": "..."}',
+  "Return one object per INPUT id, in the same order, with exactly these keys:",
+  '{"id": "...", "title": "...", "zh": "...", "authors": "...", "venue": "...", "year": "..."}',
   "Rules:",
-  "(1) en must be the ARTICLE TITLE only - never the authors, never the venue, never the year;",
-  "(2) keep formulas, symbols, numbers, acronyms and proper nouns unchanged inside en;",
-  "(3) translate en into natural Chinese academic wording for zh - translate the meaning, never transliterate;",
-  "(4) for venue use the journal or conference name, and for year the four-digit year; use an empty string when the entry does not state them;",
-  "(5) if an entry has no discernible title, put the whole entry in en and your best translation in zh;",
-  "(6) never invent an entry, never merge two entries into one, and never output a URL you were not given;",
-  "(7) output ONLY the JSON array.",
+  "(1) title is the ARTICLE TITLE only - never the authors, never the venue, never the year, never the page numbers;",
+  "(2) keep formulas, symbols, numbers, acronyms and proper nouns unchanged inside title;",
+  "(3) zh is a natural Chinese translation of title - translate the meaning, never transliterate;",
+  "(4) authors is the author list as printed, or an empty string when absent;",
+  "(5) venue is the journal or conference name; year is the four-digit year; use empty strings when the entry does not state them;",
+  "(6) if an entry has no discernible title, put the most title-like phrase in title and your best translation in zh;",
+  "(7) NEVER invent a value and NEVER output a URL; leave a field empty instead of guessing;",
+  "(8) never merge two ids, never drop an id, never add an id you were not given;",
+  "(9) output ONLY the JSON array.",
 ].join(" ");
 
-const MAX_REFERENCE_CHARS = 40000;
-const MAX_REFERENCE_ENTRIES = 80;
+// (v52) Used only when segmentation could not split a section. The model names
+// line ranges; the PROGRAM then builds the entries from those ranges, so the
+// original text is never rewritten by the model.
+const REFERENCE_LINES_SYSTEM = [
+  "You are a research assistant segmenting the bibliography of an academic paper.",
+  "You receive numbered source lines, one per line, formatted as `N| text`.",
+  "Identify the line ranges that belong to one bibliographic reference each.",
+  "Output ONLY a JSON array - no prose, no code fences.",
+  'Each element is {"from": <first line number>, "to": <last line number>} using the SAME numbers you were given.',
+  "Rules:",
+  "(1) ranges must be in ascending order, must not overlap, and must stay inside the given numbering;",
+  "(2) a reference may span several lines - include its continuation lines in the same range;",
+  "(3) ignore running headers, page numbers, and prose that is clearly not a reference;",
+  "(4) never invent line numbers, never rewrite the text, never output anything but the array.",
+].join(" ");
+
+// (v52) Reference budgets. `MAX_REFERENCE_CHARS` is now only a safety ceiling on
+// the slice we hand to the model — the section locator itself is line based and
+// stops at the next section heading, so a long appendix after the bibliography
+// can no longer push real entries out of the window.
+const MAX_REFERENCE_CHARS = 200000;
+// A hard ceiling that is REPORTED rather than applied silently: when a document
+// exceeds it the response carries `pendingFrom`/`pendingTo` so the caller can
+// continue instead of wondering where 81 entries went.
+const MAX_REFERENCE_ENTRIES = 400;
+const REFERENCES_PER_BATCH = 10;
+const REFERENCE_BATCH_CHARS = 12000;
+const MAX_REFERENCE_CONTEXT_CHARS = 4000;
+const REFERENCE_TIMEOUT_MS = 60000;
 const REFERENCE_CONCURRENCY = 3;
-const REFERENCE_TIMEOUT_MS = 15000;
-// How much of a parsed title's vocabulary a Crossref candidate must reproduce
-// before its DOI is accepted. Deliberately strict — a wrong link is worse than
-// 未找到, and topic-similar papers routinely differ by a single noun.
-const TITLE_MATCH_MIN = 0.85;
-// Crossref asks every client to identify itself; the mailto slot is optional.
-const CROSSREF_AGENT = "english-lit-reader/1.0.20 (https://localhost; mailto:noreply@example.com)";
+// Address resolution. Crossref advertises `x-rate-limit-limit: 3` per second to
+// anonymous callers and answers 429 far below that once a paper is opened twice;
+// OpenAlex throttles harder. One global queue spaces every outbound lookup, and
+// a 429 is retried with backoff instead of being reported as 「未找到」.
+const RESOLVER_MIN_INTERVAL_MS = 620;
+const RESOLVER_TIMEOUT_MS = 12000;
+const RESOLVER_MAX_ATTEMPTS = 3;
+const RESOLVER_BACKOFF_MS = [1400, 3200, 6400];
+// Auto-link needs strong evidence; the middle band still shows a link but marks
+// it 「待确认」 so a wrong DOI can never masquerade as a verified one.
+const TITLE_MATCH_MIN = 0.9;
+const TITLE_CONFIRM_MIN = 0.72;
+// A generic qualifier in a candidate title means "same topic, different work".
+const TITLE_QUALIFIERS = new Set([
+  "survey", "surveys", "review", "reviews", "overview", "tutorial", "tutorials",
+  "reprint", "reprinted", "erratum", "corrigendum", "correction", "retraction",
+  "comment", "comments", "reply", "discussion", "abstract", "extended", "poster",
+  "demo", "editorial", "preface", "introduction", "handbook", "encyclopedia",
+]);
+// Both services ask clients to identify themselves. A real mailto puts us in the
+// polite pool, which is the difference between steady 200s and a wall of 429s.
+const RESOLVER_MAILTO = "584628900@qq.com";
+const CROSSREF_AGENT = "dsh-english-lit-reader/1.0.52 (https://github.com/YuboCoco/dsh-english-lit-reader; mailto:" + RESOLVER_MAILTO + ")";
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -526,29 +576,327 @@ async function modelEfforts(llm, provider, model) {
 }
 
 // ---------------------------------------------------------------------------
-// (v21 #1) Reference bibliography resolution.
+// (v52) Reference engine, stage 1 — locating and segmenting the bibliography.
 //
-// The model is only asked to PARSE the reference list (title + Chinese title +
-// venue + year). Address resolution is done here, by Crossref, because a model
-// will happily fabricate a DOI. Anything Crossref does not confirm is reported
-// with found:false so the UI can print 未找到 instead of a wrong link.
+// The old path trimmed the last 40,000 characters of the document and let the
+// model invent the entry boundaries. Both halves of that were wrong: a long
+// appendix after the bibliography pushed real entries out of the window, and a
+// single JSON array of 81 items came back truncated with no way to tell. The
+// pipeline is now staged so the ORIGINAL entries are on screen before any model
+// call happens, and every later stage fills fields in by a stable id:
+//
+//   extract  -> section lines -> entries {id, number, pages, raw}   (no model)
+//   fields   -> title / zh / venue / year for a batch of ids        (model)
+//   resolve  -> a link for each entry that has no identifier yet    (HTTP)
+//
+// Nothing here is allowed to drop an entry silently: a section we fail to split
+// comes back as one `unsplit` block so the UI can show the original and offer to
+// retry, which is far more useful than an empty column.
 // ---------------------------------------------------------------------------
-const REFERENCE_HEADING_RE = /(?:^|\n)\s*(?:\d+\.?\s*)?(references|bibliography|works cited|参考文献|引用文献)\s*(?:\n|$)/i;
+const REFERENCE_HEADING_RE = /^\s*(?:(?:\d+|[IVXLC]+)[.)]?\s*)?(references|bibliography|works\s+cited|literature\s+cited|参考文献|引用文献)\s*[:：]?\s*$/i;
+const REFERENCE_END_RE = /^\s*(?:(?:\d+|[IVXLC]+)[.)]?\s*)?(appendix|appendices|supplementary|supplemental|supporting\s+information|acknowledge?ments?\b|author\s+biograph|about\s+the\s+authors|附录|致谢|补充材料)/i;
+// Leading numbers: "[12]", "12.", "12)", "(12)". The bracket form is the one that
+// actually survives PDF extraction with a stable shape, so it is tried first.
+const REFERENCE_NUMBER_RES = [
+  /^\s*\[(\d{1,3})\]\s*/,
+  /^\s*\((\d{1,3})\)\s*/,
+  /^\s*(\d{1,3})[.)]\s+/,
+];
+// Author-year fallback: "Surname, A." / "Surname, A., Surname, B." at line start.
+const AUTHOR_YEAR_START_RE = /^[A-Z][A-Za-z\u00c0-\u024f'’\-]{1,30},\s*(?:[A-Z]\.|[A-Z][a-z]+|&)/;
 
-function referenceTail(text) {
+function splitLines(text) {
   const source = String(text == null ? "" : text);
-  if (source.length <= MAX_REFERENCE_CHARS) return source;
-  // References live at the END of a paper, so a long document is trimmed from the
-  // front. Prefer to start right after the last "References" heading.
-  const tail = source.slice(source.length - MAX_REFERENCE_CHARS);
-  const match = REFERENCE_HEADING_RE.exec(tail);
-  if (match) return tail.slice(match.index).slice(0, MAX_REFERENCE_CHARS);
-  return tail;
+  const raw = source.split(/\r\n?|\n/);
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    const value = raw[i].replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").trim();
+    if (value) out.push({ t: value, page: 0, line: out.length });
+  }
+  return out;
 }
 
-function parseReferenceArray(raw) {
+/**
+ * Find the bibliography inside an ordered line list.
+ *
+ * Preference order matters: a standalone heading is the strongest signal, but
+ * many PDFs render the heading as a running head or lose it entirely, so a
+ * numbering run in the last third of the document is accepted as a fallback.
+ * The section ENDS at the next real section heading — that single rule is what
+ * keeps a 60-page appendix from shadowing the entries.
+ */
+function locateReferenceLines(lines) {
+  if (!Array.isArray(lines) || !lines.length) return { lines: [], found: false, reason: "empty" };
+  let start = -1;
+  // Scan from the END: a mid-document "References" in a table of contents or in
+  // the phrase "see References" must not win over the real bibliography.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const text = lines[i].t;
+    if (text.length > 60) continue;
+    if (!REFERENCE_HEADING_RE.test(text)) continue;
+    // A heading is followed by reference-like lines, not by prose.
+    if (looksLikeReferenceRun(lines, i + 1, 3) || i >= lines.length - 3) { start = i + 1; break; }
+  }
+  let found = start !== -1;
+  if (!found) {
+    // Fallback: the longest run of numbered entries anywhere after the halfway
+    // point. Short documents are skipped — numbering in a table of contents is
+    // the usual false positive there.
+    let best = { from: -1, count: 0 };
+    let from = -1;
+    let count = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const numbered = Boolean(matchReferenceNumber(lines[i].t));
+      if (numbered) {
+        if (from === -1) from = i;
+        count += 1;
+      } else if (from !== -1 && lines[i].t.length > 0) {
+        if (count > best.count) best = { from, count };
+        if (count >= 3 && i < lines.length - 40) { from = -1; count = 0; }
+        else { from = -1; count = 0; }
+      }
+    }
+    if (count > best.count) best = { from, count };
+    if (best.count >= 3) { start = best.from; found = true; }
+  }
+  if (start === -1) return { lines: [], found: false, reason: "no-heading" };
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) {
+    if (REFERENCE_END_RE.test(lines[i].t) && lines[i].t.length <= 80) { end = i; break; }
+  }
+  const slice = lines.slice(start, end);
+  let chars = 0;
+  const capped = [];
+  for (const line of slice) {
+    chars += line.t.length + 1;
+    if (chars > MAX_REFERENCE_CHARS) return { lines: capped, found, reason: "capped", start, end, fullLength: slice.length };
+    capped.push(line);
+  }
+  return { lines: capped, found, reason: found ? "heading" : "numbering", start, end };
+}
+
+function looksLikeReferenceRun(lines, from, need) {
+  let hits = 0;
+  const limit = Math.min(lines.length, from + need + 4);
+  for (let i = from; i < limit && hits < need; i++) {
+    const text = lines[i].t;
+    if (matchReferenceNumber(text)) { hits += 1; continue; }
+    // An author–year citation ("LeCun, Y. Deep learning. Nature 521 (2015).") has no
+    // leading number, so a numbered-only test would reject a perfectly good heading
+    // above it. Accept the author-start shape together with a year.
+    if (AUTHOR_YEAR_START_RE.test(text) && /\b(19|20)\d{2}\b/.test(text)) { hits += 1; continue; }
+    if (/\b(19|20)\d{2}\b/.test(text) && /\b(doi|vol|pp|proceedings|journal|transactions|conference)\b/i.test(text)) hits += 1;
+  }
+  return hits >= need;
+}
+
+function matchReferenceNumber(text) {
+  for (const re of REFERENCE_NUMBER_RES) {
+    const m = re.exec(text);
+    if (m) return { number: m[1], rest: text.slice(m[0].length) };
+  }
+  return null;
+}
+
+/**
+ * Group reference lines into entries while keeping the original text intact.
+ *
+ * `raw` is the verbatim concatenation of the entry's lines, so the reader can
+ * always check us against the page even when a title or venue was parsed badly.
+ */
+function segmentReferenceEntries(lines) {
+  const list = Array.isArray(lines) ? lines : [];
+  if (!list.length) return { entries: [], mode: "none" };
+  const numbered = list.filter((line) => matchReferenceNumber(line.t)).length;
+  const authorYear = list.filter((line) => AUTHOR_YEAR_START_RE.test(line.t) && !matchReferenceNumber(line.t)).length;
+  // Numbering must be the dominant shape, otherwise a stray "[1]" citation in a
+  // sentence would split the section at the wrong place.
+  const useNumbering = numbered >= 2 && numbered * 2 >= authorYear;
+  const useAuthorYear = !useNumbering && authorYear >= 3;
+  if (!useNumbering && !useAuthorYear) {
+    // Nothing reliable to split on. Return the section as ONE block: the caller
+    // shows the original text and offers to re-run with the model.
+    return {
+      entries: [{
+        index: 0,
+        number: "",
+        pages: pageRange(list),
+        raw: list.map((line) => line.t).join("\n").slice(0, 20000),
+        lineFrom: 0,
+        lineTo: list.length - 1,
+        split: false,
+      }],
+      mode: "unsplit",
+    };
+  }
+  const entries = [];
+  let current = null;
+  const push = () => {
+    if (current && current.parts.length) {
+      const raw = current.parts.join("\n");
+      if (raw.trim()) {
+        entries.push({
+          index: entries.length,
+          number: current.number,
+          pages: current.pages,
+          raw: raw.slice(0, 20000),
+          lineFrom: current.lineFrom,
+          lineTo: current.lineTo,
+          split: true,
+        });
+      }
+    }
+    current = null;
+  };
+  for (let i = 0; i < list.length; i++) {
+    const line = list[i];
+    const text = line.t;
+    if (useNumbering) {
+      const num = matchReferenceNumber(text);
+      if (num) {
+        push();
+        current = { number: num.number, parts: [num.rest || text], pages: pageRange([line]), lineFrom: i, lineTo: i };
+        continue;
+      }
+    } else if (AUTHOR_YEAR_START_RE.test(text) && current && /\b(19|20)\d{2}\b/.test(current.parts.join(" "))) {
+      push();
+      current = { number: "", parts: [text], pages: pageRange([line]), lineFrom: i, lineTo: i };
+      continue;
+    }
+    if (!current) {
+      current = { number: "", parts: [text], pages: pageRange([line]), lineFrom: i, lineTo: i };
+    } else {
+      current.parts.push(text);
+      current.lineTo = i;
+      const p = current.pages;
+      const q = pageRange([line]);
+      if (q) current.pages = p && q !== p ? p + "–" + q : (p || q);
+    }
+  }
+  push();
+  return { entries, mode: useNumbering ? "numbering" : "author-year" };
+}
+
+function pageRange(lines) {
+  const pages = lines.map((line) => Number(line.page) || 0).filter((page) => page > 0);
+  if (!pages.length) return "";
+  const min = Math.min.apply(null, pages);
+  const max = Math.max.apply(null, pages);
+  return min === max ? String(min) : min + "–" + max;
+}
+
+// The highest-confidence identifier is the one printed in the entry itself.
+// Line wrapping splits DOIs after "/" all the time, so the compact variant with
+// every space removed is searched as well — a DOI never contains a space.
+const DOI_RE = /\b(10\.\d{4,9}\/[^\s"'<>,;]+)/i;
+const ARXIV_RE = /\barxiv[:\s]*(\d{4}\.\d{4,5})(?:v\d+)?/i;
+
+function findPrintedIdentifier(raw) {
+  const text = String(raw == null ? "" : raw);
+  if (!text) return null;
+  const compact = text.replace(/\s+/g, "");
+  for (const haystack of [text, compact]) {
+    const doi = DOI_RE.exec(haystack);
+    if (doi) {
+      const value = stripTrailingPunctuation(doi[1]);
+      if (value && value.indexOf("/") > 0) return { kind: "doi", id: value, url: "https://doi.org/" + value };
+    }
+    const arxiv = ARXIV_RE.exec(haystack);
+    if (arxiv) return { kind: "arxiv", id: arxiv[1], url: "https://arxiv.org/abs/" + arxiv[1] };
+  }
+  return null;
+}
+
+function stripTrailingPunctuation(value) {
+  return String(value || "").replace(/[.,;:)\]}>'\u2019\u201d]+$/, "");
+}
+
+/** Full stage-1 pipeline: raw document text -> stable, ordered entries. */
+function segmentText(text) {
+  const lines = splitLines(text);
+  const located = locateReferenceLines(lines);
+  const segmented = segmentReferenceEntries(located.lines);
+  return finishSegment(segmented, located);
+}
+
+function finishSegment(segmented, located) {
+  const entries = segmented.entries.map((entry, index) => {
+    // The id is derived from position, not from time or randomness: a re-run on
+    // the same document must produce the same ids so already-fetched fields and
+    // links can be merged instead of re-queried.
+    const printed = findPrintedIdentifier(entry.raw);
+    return {
+      id: "r" + (index + 1),
+      index,
+      number: entry.number || "",
+      pages: entry.pages || "",
+      raw: entry.raw,
+      split: entry.split !== false,
+      title: "",
+      zh: "",
+      authors: "",
+      venue: "",
+      year: "",
+      status: printed ? "provided" : "pending",
+      url: printed ? printed.url : "",
+      doi: printed && printed.kind === "doi" ? printed.id : "",
+      identifier: printed ? printed.kind : "",
+    };
+  });
+  return {
+    entries: entries.slice(0, MAX_REFERENCE_ENTRIES),
+    mode: segmented.mode,
+    reason: located.reason,
+    truncated: entries.length > MAX_REFERENCE_ENTRIES || Boolean(located.fullLength),
+    fullLength: located.fullLength || 0,
+  };
+}
+
+/**
+ * P2 fallback for a section that could not be split mechanically.
+ *
+ * The model never rewrites the text: it only returns line RANGES against a
+ * numbering we generated, and the program builds the entries from those ranges.
+ * Every range is validated (ascending, non-overlapping, inside bounds) before it
+ * is used, so a hallucinated number cannot corrupt the list.
+ */
+async function segmentByLineRanges(llm, model, lines) {
+  const numbered = lines.slice(0, 400).map((line, index) => (index + 1) + "| " + line.t).join("\n");
+  const raw = await runModel(llm, {
+    provider: model.provider,
+    model: model.model,
+    reasoningEffort: model.reasoningEffort,
+    system: REFERENCE_LINES_SYSTEM,
+    user: "编号源文本如下：\n\n" + numbered.slice(0, MAX_REFERENCE_CHARS),
+  });
+  const ranges = parseObjectArray(raw, ["from", "to"]);
+  const entries = [];
+  let last = 0;
+  for (const item of ranges) {
+    const from = Number(item.from);
+    const to = Number(item.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
+    const start = Math.max(1, Math.min(lines.length, Math.floor(from)));
+    const stop = Math.max(start, Math.min(lines.length, Math.floor(to)));
+    // Ascending and non-overlapping: a range that walks backwards or repeats the
+    // previous one is discarded rather than silently reordering the bibliography.
+    if (start <= last) continue;
+    last = stop;
+    const slice = lines.slice(start - 1, stop);
+    entries.push({
+      index: entries.length,
+      number: (matchReferenceNumber(slice[0] ? slice[0].t : "") || {}).number || "",
+      pages: pageRange(slice),
+      raw: slice.map((line) => line.t).join("\n").slice(0, 20000),
+      split: true,
+    });
+  }
+  return entries;
+}
+
+/** Parse a JSON array of flat objects, tolerating fences and a truncated tail. */
+function parseObjectArray(raw, keys) {
   let text = String(raw == null ? "" : raw).trim();
-  // The model sometimes wraps the array in a Markdown fence despite the prompt.
   text = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
@@ -557,58 +905,146 @@ function parseReferenceArray(raw) {
   try {
     parsed = JSON.parse(text);
   } catch (_) {
-    return [];
+    // A truncated array (one missing closing bracket) used to zero the column.
+    // Salvage the complete objects instead of discarding everything.
+    parsed = salvageObjectArray(text, keys);
   }
   if (!Array.isArray(parsed)) return [];
   const out = [];
   for (const item of parsed) {
-    if (!item || typeof item !== "object") continue;
-    const en = typeof item.en === "string" ? item.en.trim() : "";
-    if (!en) continue;
-    out.push({
-      en: en.slice(0, 400),
-      zh: typeof item.zh === "string" ? item.zh.trim().slice(0, 400) : "",
-      venue: typeof item.venue === "string" ? item.venue.trim().slice(0, 200) : "",
-      year: typeof item.year === "string" ? item.year.trim().slice(0, 12) : "",
-    });
-    if (out.length >= MAX_REFERENCE_ENTRIES) break;
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const normalized = {};
+    for (const key of keys) normalized[key] = typeof item[key] === "string" ? item[key] : (item[key] == null ? "" : String(item[key]));
+    if (keys.some((key) => normalized[key])) out.push(normalized);
   }
   return out;
 }
 
-function crossrefRequest(title, hint, year, signal) {
+function salvageObjectArray(text, keys) {
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{") { if (depth === 0) start = i; depth += 1; }
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        const slice = text.slice(start, i + 1);
+        try {
+          const item = JSON.parse(slice);
+          if (item && typeof item === "object" && !Array.isArray(item)) out.push(item);
+        } catch (_) {}
+        start = -1;
+      }
+    }
+  }
+  return out.length ? out : [];
+}
+
+/**
+ * Stage 2: fill title/zh/authors/venue/year for entries that need it.
+ *
+ * Entries whose answer is missing are returned untouched rather than dropped —
+ * the caller shows the original text and can retry just those ids.
+ */
+async function fillReferenceFields(llm, model, entries) {
+  if (!entries.length) return entries;
+  const batches = [];
+  let batch = [];
+  let chars = 0;
+  for (const entry of entries) {
+    const length = String(entry.raw || "").length + 40;
+    if (batch.length && (batch.length >= REFERENCES_PER_BATCH || chars + length > REFERENCE_BATCH_CHARS)) {
+      batches.push(batch);
+      batch = [];
+      chars = 0;
+    }
+    batch.push(entry);
+    chars += length;
+  }
+  if (batch.length) batches.push(batch);
+  const byId = new Map();
+  for (const group of batches) {
+    const payload = group.map((entry) => ({ id: entry.id, entry: String(entry.raw || "").slice(0, 2000), context: "" }));
+    let raw = "";
+    try {
+      raw = await runModel(llm, {
+        provider: model.provider,
+        model: model.model,
+        reasoningEffort: model.reasoningEffort,
+        system: REFERENCE_FIELDS_SYSTEM,
+        user: "批次的条目如下（JSON）：\n\n" + JSON.stringify(payload, null, 0),
+      });
+    } catch (_) {
+      continue;
+    }
+    for (const item of parseObjectArray(raw, ["id", "title", "zh", "authors", "venue", "year"])) {
+      const id = String(item.id || "");
+      if (id && !byId.has(id)) byId.set(id, item);
+    }
+  }
+  return entries.map((entry) => {
+    const item = byId.get(entry.id);
+    if (!item) return entry;
+    return Object.assign({}, entry, {
+      title: String(item.title || "").trim().slice(0, 400),
+      zh: String(item.zh || "").trim().slice(0, 400),
+      authors: String(item.authors || "").trim().slice(0, 400),
+      venue: String(item.venue || "").trim().slice(0, 200),
+      year: String(item.year || "").trim().slice(0, 12),
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// (v52) Reference engine, stage 3 — address resolution.
+//
+// Two things were measurably broken. First, matching was one-directional: the
+// shorter title's vocabulary was looked up inside the longer one, so
+// "Generative Adversarial Networks" vs a printed "Generative Adversarial Nets"
+// scored 0.67 (same work, rejected) while "Deep Learning" vs "A Survey of Deep
+// Learning" scored 1.00 (different works, accepted). Coverage is now required in
+// BOTH directions, checked against the query we sent (never the printed raw
+// entry, which carries authors and page numbers), and a generic qualifier on
+// either side (survey/review/erratum…) can only reduce confidence.
+//
+// Second, every non-200 was reported as "no match". A burst of 429s therefore
+// painted the whole column 未找到 even though the paper has a perfectly good
+// DOI. Statuses are now distinct: `provided` (printed in the entry itself),
+// `matched`, `none`, `confirm` (link shown but flagged) and `retry` (transient
+// failure). Only `retry` entries are re-queried by 「重试失败项」.
+//
+// A single global queue serialises outbound lookups and spaces them by
+// RESOLVER_MIN_INTERVAL_MS, which is what makes 429s rare in the first place;
+// the ones that still happen are retried with backoff instead of being lost.
+// ---------------------------------------------------------------------------
+let resolverChain = Promise.resolve();
+let resolverLastAt = 0;
+
+function resolverPace() {
+  // Chained through ONE promise so concurrent callers cannot all read the same
+  // "last request" timestamp and fire simultaneously.
+  const wait = Math.max(0, RESOLVER_MIN_INTERVAL_MS - (Date.now() - resolverLastAt));
+  resolverChain = resolverChain.then(() => new Promise((resolve) => {
+    const timer = setTimeout(resolve, wait);
+    if (timer && typeof timer.unref === "function") timer.unref();
+  })).then(() => { resolverLastAt = Date.now(); });
+  return resolverChain;
+}
+
+function httpGetJson(url, headers, timeoutMs) {
   return new Promise((resolve) => {
-    const wanted = String(title == null ? "" : title).trim();
-    if (!wanted) return resolve(null);
-    const wantedYear = /^(19|20)\d{2}$/.test(String(year == null ? "" : year).trim())
-      ? Number(String(year).trim())
-      : 0;
-    // The venue is a search HINT only; matching is done against the parsed title
-    // alone, otherwise two different papers that merely share a topic ("general
-    // time series analysis") score as the same one.
-    const query = [wanted, String(hint == null ? "" : hint).trim()].filter(Boolean).join(" ");
-    // rows=5: the top hit is often a survey that merely mentions the paper, so
-    // every candidate is scored and the best title match wins instead of blindly
-    // trusting rank 1.
-    const url = "https://api.crossref.org/works?rows=5&select=title,DOI,URL,container-title,issued"
-      + "&query.bibliographic=" + encodeURIComponent(query.slice(0, 300));
     let settled = false;
-    const done = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
     let request;
     try {
-      request = httpsGet(url, {
-        headers: {
-          "User-Agent": CROSSREF_AGENT,
-          Accept: "application/json",
-        },
-      }, (response) => {
-        if (response.statusCode !== 200) {
+      request = httpsGet(url, { headers }, (response) => {
+        const status = Number(response.statusCode) || 0;
+        if (status !== 200) {
+          // 429/5xx are TRANSIENT and must stay distinguishable from "no match".
           response.resume();
-          done(null);
+          done({ ok: false, status, transient: status === 429 || status === 408 || status >= 500, retryAfter: Number(response.headers && response.headers["retry-after"]) || 0 });
           return;
         }
         const chunks = [];
@@ -619,103 +1055,251 @@ function crossrefRequest(title, hint, year, signal) {
         });
         response.on("end", () => {
           try {
-            const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-            const items = (payload && payload.message && payload.message.items) || [];
-            let best = null;
-            let bestScore = 0;
-            for (const item of items) {
-              if (!item) continue;
-              const candidate = Array.isArray(item.title) ? (item.title[0] || "") : String(item.title || "");
-              if (!candidate) continue;
-              let score = titleScore(candidate, wanted);
-              // A year mismatch is decisive: conference papers often have no DOI,
-              // and Crossref happily returns a same-titled BOOK CHAPTER or a
-              // reprint decades later. Trusting it would attach a wrong link.
-              if (wantedYear) {
-                const parts = item.issued && item.issued["date-parts"];
-                const candidateYear = Array.isArray(parts) && Array.isArray(parts[0]) && parts[0][0]
-                  ? Number(parts[0][0])
-                  : 0;
-                if (candidateYear && Math.abs(candidateYear - wantedYear) > 1) score = 0;
-              }
-              if (score > bestScore) { bestScore = score; best = item; }
-            }
-            // A high bar on purpose: a wrong DOI is worse than 未找到. The score
-            // must cover nearly every distinctive word of the parsed title.
-            if (!best || bestScore < TITLE_MATCH_MIN) { done(null); return; }
-            const matched = Array.isArray(best.title) ? (best.title[0] || "") : String(best.title || "");
-            const doi = typeof best.DOI === "string" ? best.DOI : "";
-            const venue = Array.isArray(best["container-title"]) ? (best["container-title"][0] || "") : "";
-            const parts = best.issued && best.issued["date-parts"];
-            const year = Array.isArray(parts) && Array.isArray(parts[0]) && parts[0][0] ? String(parts[0][0]) : "";
-            done({
-              url: doi ? "https://doi.org/" + doi : (typeof best.URL === "string" ? best.URL : ""),
-              doi,
-              title: matched,
-              venue,
-              year,
-              score: bestScore,
-            });
+            done({ ok: true, status, body: JSON.parse(Buffer.concat(chunks).toString("utf8")), limit: Number(response.headers && response.headers["x-rate-limit-limit"]) || 0 });
           } catch (_) {
-            done(null);
+            done({ ok: false, status, transient: true, body: null });
           }
         });
-        response.on("error", () => done(null));
+        response.on("error", () => done({ ok: false, status, transient: true }));
       });
     } catch (_) {
-      return done(null);
+      return done({ ok: false, status: 0, transient: true });
     }
-    request.setTimeout(REFERENCE_TIMEOUT_MS, () => {
+    request.setTimeout(timeoutMs || RESOLVER_TIMEOUT_MS, () => {
       try { request.destroy(); } catch (_) {}
-      done(null);
+      done({ ok: false, status: 0, transient: true });
     });
-    request.on("error", () => done(null));
-    if (signal) {
-      if (signal.aborted) {
-        try { request.destroy(); } catch (_) {}
-        return done(null);
-      }
-      signal.addEventListener("abort", () => {
-        try { request.destroy(); } catch (_) {}
-        done(null);
-      }, { once: true });
-    }
+    request.on("error", () => done({ ok: false, status: 0, transient: true }));
   });
 }
 
-// Loose title comparison. Normalise case/punctuation, then measure how much of
-// the SHORTER title's significant vocabulary appears in the longer one, with a
-// prefix allowance so "forecasting" still matches "forecast".
-function titleScore(a, b) {
-  const norm = (value) => String(value || "")
+/** Run an outbound lookup through the shared queue, retrying transient errors. */
+async function resolverFetch(url, headers) {
+  let last = null;
+  for (let attempt = 0; attempt < RESOLVER_MAX_ATTEMPTS; attempt++) {
+    await resolverPace();
+    last = await httpGetJson(url, headers, RESOLVER_TIMEOUT_MS);
+    if (last.ok) return last;
+    if (!last.transient) return last;
+    const hinted = last.retryAfter > 0 ? Math.min(last.retryAfter * 1000, 8000) : 0;
+    const backoff = hinted || RESOLVER_BACKOFF_MS[Math.min(attempt, RESOLVER_BACKOFF_MS.length - 1)];
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, backoff);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+  }
+  return last;
+}
+
+// Word-level comparison used for BOTH directions. Digits and short tokens are
+// kept: "GPT-4" vs "GPT-3" and "ResNet-50" vs "ResNet-101" differ only there.
+function titleWords(value) {
+  return String(value || "")
     .toLowerCase()
+    .replace(/[\u2018\u2019\u201c\u201d]/g, "")
     .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
-    .trim();
-  const left = norm(a);
-  const right = norm(b);
-  if (!left || !right) return 0;
-  if (left === right) return 1;
-  const words = (value) => value.split(/\s+/).filter((w) => w.length > 2);
-  const la = words(left);
-  const lb = words(right);
-  if (!la.length || !lb.length) return 0;
-  const small = la.length <= lb.length ? la : lb;
-  const big = la.length <= lb.length ? lb : la;
-  const bigSet = new Set(big);
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((word) => word.length > 1 || /\d/.test(word));
+}
+
+function wordCoverage(from, into) {
+  if (!from.length) return 0;
+  const target = new Set(into);
   let hit = 0;
-  for (const word of small) {
-    if (bigSet.has(word)) { hit += 1; continue; }
-    // Allow inflection/suffix differences ("forecasting" vs "forecast").
-    const stem = word.slice(0, Math.max(4, word.length - 3));
-    for (const other of big) {
-      if (other.indexOf(stem) === 0) { hit += 1; break; }
+  for (const word of from) {
+    if (target.has(word)) { hit += 1; continue; }
+    // Inflection allowance, but only between words long enough to be a stem match:
+    // "forecasting"/"forecast" and "nets"/"networks" pair up (a 4+ character word
+    // sharing all but its last letter with a longer one), while "net" must NOT
+    // match "network" — three letters is a different word, not an inflection.
+    if (word.length >= 4) {
+      let found = false;
+      for (const other of into) {
+        if (other.length < 4) continue;
+        if (other.indexOf(word) === 0 || word.indexOf(other) === 0) { found = true; break; }
+        let shared = 0;
+        const limit = Math.min(word.length, other.length);
+        while (shared < limit && word[shared] === other[shared]) shared += 1;
+        if (shared >= Math.min(word.length, other.length) - 1) { found = true; break; }
+      }
+      if (found) hit += 1;
     }
   }
-  return hit / small.length;
+  return hit / from.length;
+}
+
+/**
+ * Confidence that two titles name the same work, in [0, 1].
+ *
+ * Symmetric minimum coverage means a title that only covers one direction can
+ * never score high: "Deep Learning" is fully contained in "A Survey of Deep
+ * Learning", but the survey is not contained in "Deep Learning".
+ */
+function titleScore(a, b) {
+  const left = titleWords(a);
+  const right = titleWords(b);
+  if (!left.length || !right.length) return 0;
+  if (left.join(" ") === right.join(" ")) return 1;
+  const forward = wordCoverage(left, right);
+  const backward = wordCoverage(right, left);
+  const base = Math.min(forward, backward);
+  // A qualifier on one side only ("survey"/"review"/"erratum") means the two
+  // titles differ by more than wording — cap it below the confirm threshold.
+  const qualifier = left.some((w) => TITLE_QUALIFIERS.has(w)) !== right.some((w) => TITLE_QUALIFIERS.has(w));
+  return qualifier ? Math.min(base, 0.7) : base;
 }
 
 function titleMatches(a, b) {
-  return titleScore(a, b) >= 0.6;
+  return titleScore(a, b) >= TITLE_CONFIRM_MIN;
+}
+
+function parseIssuedYear(item) {
+  const parts = item && item.issued && item.issued["date-parts"];
+  if (Array.isArray(parts) && Array.isArray(parts[0]) && parts[0][0]) return String(parts[0][0]);
+  const created = item && item.created && item.created["date-parts"];
+  if (Array.isArray(created) && Array.isArray(created[0]) && created[0][0]) return String(created[0][0]);
+  return "";
+}
+
+function firstString(value) {
+  if (Array.isArray(value)) return typeof value[0] === "string" ? value[0] : "";
+  return typeof value === "string" ? value : "";
+}
+
+// Query shaping matters more than any scoring tweak:
+//  - Crossref's `query.bibliographic` is a TITLE field. Stuffing authors and the
+//    year into it makes the ranking worse, so authors go to their own parameter.
+//  - OpenAlex's `search=` is fuzzy full-text and returns near-miss titles; the
+//    `title.search` filter is exact-ish and orders the real paper first.
+function firstAuthorSurname(authors) {
+  const value = String(authors == null ? "" : authors);
+  const first = value.split(/[;,]|\band\b/)[0] || "";
+  const cleaned = first.replace(/[^A-Za-z\u00c0-\u024f'’\-\s]/g, " ").trim();
+  if (!cleaned) return "";
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  // "Ashish Vaswani" → Vaswani; "Vaswani A." → Vaswani; a lone token is kept.
+  const word = parts.length > 1 ? parts[parts.length - 1] : parts[0];
+  return word.length >= 2 ? word.slice(0, 40) : "";
+}
+
+function crossrefUrl(title, author) {
+  let url = "https://api.crossref.org/works?rows=5"
+    + "&select=title,DOI,URL,container-title,issued,author,type"
+    + "&query.bibliographic=" + encodeURIComponent(String(title || "").slice(0, 240));
+  const surname = firstAuthorSurname(author);
+  if (surname) url += "&query.author=" + encodeURIComponent(surname);
+  return url;
+}
+
+function openAlexUrl(title) {
+  return "https://api.openalex.org/works?per-page=5&mailto=" + encodeURIComponent(RESOLVER_MAILTO)
+    + "&filter=title.search:" + encodeURIComponent(String(title || "").slice(0, 240));
+}
+
+/**
+ * Ask both resolvers and pick the best evidence.
+ *
+ * Crossref is the primary source because its DOI is the article's own; OpenAlex
+ * is the fallback that also carries arXiv preprints (`10.48550/arxiv.…`) and
+ * conference papers Crossref often lacks. Two strong candidates that disagree
+ * are reported as `confirm`, never auto-linked.
+ */
+async function resolveAddress(entry, signal) {
+  const title = String(entry.title == null ? "" : entry.title).trim().slice(0, 240);
+  if (!title) return { status: "none", url: "", doi: "", candidates: 0 };
+  const wantedYear = /^(19|20)\d{2}$/.test(String(entry.year || "").trim()) ? Number(String(entry.year).trim()) : 0;
+  const headers = { "User-Agent": CROSSREF_AGENT, Accept: "application/json" };
+  const collected = [];
+  let transient = false;
+
+  const crossref = await resolverFetch(crossrefUrl(title, entry.authors), headers);
+  if (signal && signal.aborted) return { status: "retry", transient: true, candidates: 0 };
+  if (!crossref.ok) {
+    if (crossref.transient) transient = true;
+  } else {
+    const items = (crossref.body && crossref.body.message && crossref.body.message.items) || [];
+    for (const item of items) {
+      const candidateTitle = firstString(item.title);
+      if (!candidateTitle) continue;
+      const score = titleScore(candidateTitle, title);
+      if (!score) continue;
+      const candidateYear = parseIssuedYear(item);
+      if (wantedYear && candidateYear && Math.abs(Number(candidateYear) - wantedYear) > 1) continue;
+      const doi = typeof item.DOI === "string" ? item.DOI : "";
+      collected.push({
+        score,
+        source: "crossref",
+        title: candidateTitle,
+        doi,
+        url: doi ? "https://doi.org/" + doi : firstString(item.URL),
+        venue: firstString(item["container-title"]),
+        year: candidateYear,
+        // Deposits carry a type: a `posted-content` record with the paper's title
+        // (and often its real author list) is a PREPRINT MIRROR, not the article.
+        // It must not outrank the published version, so it is scored down and can
+        // never reach "matched" on its own.
+        preprint: String(item.type || "").toLowerCase() === "posted-content",
+      });
+    }
+  }
+
+  // Only reach for the second service when the first found nothing convincing —
+  // every extra request eats into the shared rate budget.
+  const bestSoFar = collected.reduce((acc, item) => (item.preprint ? acc : Math.max(acc, item.score)), 0);
+  if (bestSoFar < TITLE_MATCH_MIN) {
+    const openalex = await resolverFetch(openAlexUrl(title), { "User-Agent": CROSSREF_AGENT, Accept: "application/json" });
+    if (signal && signal.aborted) return { status: "retry", transient: true, candidates: 0 };
+    if (!openalex.ok) {
+      if (openalex.transient) transient = true;
+    } else {
+      const results = (openalex.body && openalex.body.results) || [];
+      for (const item of results) {
+        const candidateTitle = firstString(item.title) || firstString(item.display_name);
+        if (!candidateTitle) continue;
+        const score = titleScore(candidateTitle, title);
+        if (!score) continue;
+        const candidateYear = String(item.publication_year || "");
+        if (wantedYear && candidateYear && Math.abs(Number(candidateYear) - wantedYear) > 1) continue;
+        const doi = String(item.doi || "").replace(/^https?:\/\/doi\.org\//i, "");
+        const venue = (item.primary_location && item.primary_location.source && item.primary_location.source.display_name) || "";
+        collected.push({
+          score,
+          source: "openalex",
+          title: candidateTitle,
+          doi,
+          url: doi ? "https://doi.org/" + doi : String(item.id || ""),
+          venue,
+          year: candidateYear,
+          // An arXiv DOI is a legitimate citation target, not a downgrade.
+          preprint: /^10\.48550\/arxiv\./i.test(doi) ? false : item.type === "preprint",
+        });
+      }
+    }
+  }
+
+  collected.sort((a, b) => b.score - a.score);
+  const best = collected[0];
+  if (!best || best.score < TITLE_CONFIRM_MIN) {
+    if (transient) return { status: "retry", transient: true, candidates: collected.length };
+    return { status: "none", url: "", doi: "", candidates: collected.length };
+  }
+  // A near-tie between two different DOIs is exactly the survey-vs-paper case:
+  // show the top one but make the reader confirm.
+  const rival = collected.find((item) => item !== best && item.doi && item.doi !== best.doi && best.score - item.score < 0.12);
+  // A mirror can be shown but never auto-accepted: the reader must confirm that
+  // this really is the address of the paper they are reading.
+  const confident = best.score >= TITLE_MATCH_MIN && !rival && !best.preprint;
+  return {
+    status: confident ? "matched" : "confirm",
+    url: best.url,
+    doi: best.doi,
+    title: best.title,
+    venue: best.venue,
+    year: best.year,
+    score: Math.round(best.score * 100) / 100,
+    candidates: collected.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,13 +1659,186 @@ function buildRoutes(ctx, llm) {
     },
   });
 
-  // (v21 #1) Bibliography extraction + address resolution.
+  // (v52) Bibliography pipeline, three routes instead of one blocking call.
   //
-  // Two stages, deliberately separated: the model only parses the reference list
-  // into {en, zh, venue, year}; the Host then asks Crossref for an address and
-  // keeps it ONLY when the returned title actually resembles the parsed one. An
-  // unresolved entry comes back with found:false so the column can print 未找到
-  // rather than a plausible-looking but wrong DOI.
+  //   POST /references/segment  text            -> entries (no model, instant)
+  //   POST /references/fields   entries[, ids]   -> title/zh/authors/venue/year
+  //   POST /references/resolve  entries          -> address per entry
+  //
+  // Splitting them is what lets the column show the ORIGINAL entries before any
+  // model or network work finishes, and lets a retry touch only the entries that
+  // actually failed. /references is kept as a one-shot compatibility shim.
+  routes.push({
+    path: BASE + "/references/segment",
+    handler: async (req, res) => {
+      if (req.method !== "POST") return json(res, 405, { ok: false, error: "method not allowed" });
+      if (!originOk(req)) return json(res, 403, { ok: false, error: "origin not trusted" });
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (error) {
+        return json(res, 200, { ok: false, error: safeMessage(error) });
+      }
+      const text = typeof body.text === "string" ? body.text : "";
+      if (!text.trim()) return json(res, 200, { ok: false, error: "text must be a non-empty string" });
+      if (!/[A-Za-z]/.test(text)) {
+        return json(res, 200, { ok: false, error: "no text layer", reason: "no-text" });
+      }
+      try {
+        const lines = splitLines(text);
+        const located = locateReferenceLines(lines);
+        let segmented = segmentReferenceEntries(located.lines);
+        // (v52 P2) A section we cannot split mechanically is handed to the model
+        // ONLY when the caller asks for it: the mechanical pass must stay instant
+        // so the original text is on screen before any network work starts.
+        let modelUsed = false;
+        if (segmented.mode === "unsplit" && body.useModel === true && located.lines.length > 1) {
+          const { provider, model, reasoningEffort } = await resolveEffectiveModel(ctx, llm, body);
+          try {
+            const ranges = await segmentByLineRanges(llm, { provider, model, reasoningEffort }, located.lines);
+            if (ranges.length > 1) { segmented = { entries: ranges, mode: "line-ranges" }; modelUsed = true; }
+          } catch (_) {}
+        }
+        const outcome = finishSegment(segmented, located);
+        json(res, 200, {
+          ok: true,
+          entries: outcome.entries,
+          mode: outcome.mode,
+          reason: outcome.reason,
+          total: outcome.entries.length,
+          truncated: Boolean(outcome.truncated),
+          fullLength: outcome.fullLength || 0,
+          modelUsed,
+        });
+      } catch (error) {
+        json(res, 200, { ok: false, error: safeMessage(error) });
+      }
+    },
+  });
+
+  routes.push({
+    path: BASE + "/references/fields",
+    handler: async (req, res) => {
+      if (req.method !== "POST") return json(res, 405, { ok: false, error: "method not allowed" });
+      if (!originOk(req)) return json(res, 403, { ok: false, error: "origin not trusted" });
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (error) {
+        return json(res, 200, { ok: false, error: safeMessage(error) });
+      }
+      const incoming = Array.isArray(body.entries) ? body.entries : [];
+      if (!incoming.length) return json(res, 200, { ok: false, error: "entries must be a non-empty array" });
+      const wanted = new Set(Array.isArray(body.ids) ? body.ids.map((id) => String(id)) : []);
+      const work = incoming
+        .filter((entry) => entry && typeof entry === "object")
+        .filter((entry) => !wanted.size || wanted.has(String(entry.id || "")))
+        .slice(0, MAX_REFERENCE_ENTRIES);
+      if (!work.length) return json(res, 200, { ok: false, error: "no entries to fill" });
+      const { provider, model, reasoningEffort } = await resolveEffectiveModel(ctx, llm, body);
+      const out = [];
+      const failed = [];
+      // Batched by COUNT and by CHARACTERS: a batch of ten 2000-char entries
+      // would otherwise blow the prompt budget and come back truncated.
+      const batches = [];
+      let batch = [];
+      let chars = 0;
+      for (const entry of work) {
+        const length = String(entry.raw || "").length + 40;
+        if (batch.length && (batch.length >= REFERENCES_PER_BATCH || chars + length > REFERENCE_BATCH_CHARS)) {
+          batches.push(batch);
+          batch = [];
+          chars = 0;
+        }
+        batch.push(entry);
+        chars += length;
+      }
+      if (batch.length) batches.push(batch);
+      for (const group of batches) {
+        const payload = group.map((entry) => ({
+          id: String(entry.id || ""),
+          entry: String(entry.raw || "").slice(0, 2000),
+          context: "",
+        }));
+        let raw = "";
+        try {
+          raw = await runModel(llm, {
+            provider,
+            model,
+            reasoningEffort,
+            system: REFERENCE_FIELDS_SYSTEM,
+            user: "批次的条目如下（JSON）：\n\n" + JSON.stringify(payload, null, 0),
+          });
+        } catch (error) {
+          for (const entry of group) failed.push({ id: String(entry.id || ""), error: safeMessage(error) });
+          continue;
+        }
+        const parsed = parseObjectArray(raw, ["id", "title", "zh", "authors", "venue", "year"]);
+        const byId = new Map();
+        for (const item of parsed) {
+          const id = String(item.id || "");
+          if (id && !byId.has(id)) byId.set(id, item);
+        }
+        for (const entry of group) {
+          const id = String(entry.id || "");
+          const item = byId.get(id);
+          if (!item) { failed.push({ id, error: "missing-in-answer" }); continue; }
+          out.push({
+            id,
+            title: String(item.title || "").trim().slice(0, 400),
+            zh: String(item.zh || "").trim().slice(0, 400),
+            authors: String(item.authors || "").trim().slice(0, 400),
+            venue: String(item.venue || "").trim().slice(0, 200),
+            year: String(item.year || "").trim().slice(0, 12),
+          });
+        }
+      }
+      json(res, 200, { ok: true, fields: out, failed, total: work.length });
+    },
+  });
+
+  routes.push({
+    path: BASE + "/references/resolve",
+    handler: async (req, res) => {
+      if (req.method !== "POST") return json(res, 405, { ok: false, error: "method not allowed" });
+      if (!originOk(req)) return json(res, 403, { ok: false, error: "origin not trusted" });
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (error) {
+        return json(res, 200, { ok: false, error: safeMessage(error) });
+      }
+      const incoming = Array.isArray(body.entries) ? body.entries : [];
+      if (!incoming.length) return json(res, 200, { ok: false, error: "entries must be a non-empty array" });
+      const wanted = new Set(Array.isArray(body.ids) ? body.ids.map((id) => String(id)) : []);
+      const work = incoming
+        .filter((entry) => entry && typeof entry === "object")
+        .filter((entry) => !wanted.size || wanted.has(String(entry.id || "")))
+        .slice(0, MAX_REFERENCE_ENTRIES);
+      const listed = await mapConcurrent(work, REFERENCE_CONCURRENCY, async (entry) => {
+        // (v52) An identifier PRINTED in the entry outranks any lookup: it is the
+        // publisher's own DOI, and querying for it can only introduce error.
+        const printed = findPrintedIdentifier(entry.raw);
+        if (printed) {
+          return { id: String(entry.id || ""), status: "provided", url: printed.url, doi: printed.kind === "doi" ? printed.id : "", kind: printed.kind, source: "entry" };
+        }
+        if (!entry.title) {
+          // No title yet means the field stage has not run for this entry; the
+          // caller retries it on the next batch instead of recording 未找到.
+          return { id: String(entry.id || ""), status: "retry", reason: "no-title" };
+        }
+        const hit = await resolveAddress(entry, null);
+        return { id: String(entry.id || ""), ...hit };
+      });
+      const results = listed.map((r, index) => (r.ok ? r.value : { id: String((work[index] && work[index].id) || ""), status: "retry", reason: "error" }));
+      const counts = { provided: 0, matched: 0, confirm: 0, none: 0, retry: 0 };
+      for (const item of results) counts[item.status] = (counts[item.status] || 0) + 1;
+      json(res, 200, { ok: true, results, counts, total: results.length });
+    },
+  });
+
+  // Compatibility shim: the old blocking call still works, but now it runs the
+  // same three stages so an existing caller gets the improved data model.
   routes.push({
     path: BASE + "/references",
     handler: async (req, res) => {
@@ -1095,61 +1852,55 @@ function buildRoutes(ctx, llm) {
       }
       const text = typeof body.text === "string" ? body.text : "";
       if (!text.trim()) return json(res, 200, { ok: false, error: "text must be a non-empty string" });
-      const { provider, model, reasoningEffort } = resolveModel(ctx, body);
-      const source = referenceTail(text);
-      let entries = [];
-      let parseError = "";
       try {
-        const raw = await runModel(llm, {
-          provider,
-          model,
-          reasoningEffort,
-          system: REFERENCES_SYSTEM,
-          user: "以下是论文的参考文献部分：\n\n" + source,
+        const outcome = segmentText(text);
+        if (!outcome.entries.length) {
+          return json(res, 200, { ok: false, error: "no reference entries found", entries: [], resolved: 0, reason: outcome.reason, mode: outcome.mode });
+        }
+        const { provider, model, reasoningEffort } = await resolveEffectiveModel(ctx, llm, body);
+        const entries = await fillReferenceFields(llm, { provider, model, reasoningEffort }, outcome.entries);
+        const listed = await mapConcurrent(entries, REFERENCE_CONCURRENCY, async (entry) => {
+          const printed = findPrintedIdentifier(entry.raw);
+          if (printed) return { id: entry.id, status: "provided", url: printed.url, doi: printed.kind === "doi" ? printed.id : "" };
+          if (!entry.title) return { id: entry.id, status: "retry", reason: "no-title" };
+          return { id: entry.id, ...(await resolveAddress(entry, null)) };
         });
-        entries = parseReferenceArray(raw);
-        if (!entries.length) parseError = "未能从参考文献部分解析出条目";
+        const byId = new Map();
+        for (const item of listed) if (item.ok && item.value) byId.set(item.value.id, item.value);
+        const items = entries.map((entry) => {
+          const hit = byId.get(entry.id) || { status: "retry" };
+          return {
+            id: entry.id,
+            number: entry.number,
+            pages: entry.pages,
+            raw: entry.raw,
+            en: entry.title,
+            zh: entry.zh,
+            authors: entry.authors,
+            venue: entry.venue,
+            year: entry.year,
+            status: hit.status,
+            found: hit.status === "provided" || hit.status === "matched" || hit.status === "confirm",
+            url: hit.url || "",
+            doi: hit.doi || "",
+            matchedTitle: hit.title || "",
+            matchedYear: hit.year || "",
+          };
+        });
+        const resolved = items.filter((item) => item.found).length;
+        json(res, 200, {
+          ok: true,
+          entries: items,
+          total: items.length,
+          resolved,
+          missing: items.length - resolved,
+          mode: outcome.mode,
+          reason: outcome.reason,
+          truncated: Boolean(outcome.truncated),
+        });
       } catch (error) {
-        parseError = safeMessage(error);
+        json(res, 200, { ok: false, error: safeMessage(error) });
       }
-      if (!entries.length) {
-        return json(res, 200, { ok: false, error: parseError || "no reference entries found", entries: [], resolved: 0 });
-      }
-      const listed = await mapConcurrent(entries, REFERENCE_CONCURRENCY, async (entry) => {
-        // Resolve by TITLE; the venue only widens the Crossref search.
-        const hit = await crossrefRequest(entry.en, entry.venue, entry.year, null);
-        return {
-          en: entry.en,
-          zh: entry.zh,
-          venue: (hit && hit.venue) || entry.venue,
-          year: (hit && hit.year) || entry.year,
-          found: Boolean(hit && hit.url),
-          url: hit && hit.url ? hit.url : "",
-          doi: hit && hit.doi ? hit.doi : "",
-          matchedTitle: hit && hit.title ? hit.title : "",
-          matchedYear: hit && hit.year ? hit.year : "",
-        };
-      });
-      const items = listed.map((r, index) => (r.ok ? r.value : {
-        en: entries[index] ? entries[index].en : "",
-        zh: entries[index] ? entries[index].zh : "",
-        venue: entries[index] ? entries[index].venue : "",
-        year: entries[index] ? entries[index].year : "",
-        found: false,
-        url: "",
-        doi: "",
-        matchedTitle: "",
-        matchedYear: "",
-      }));
-      const resolved = items.filter((item) => item.found).length;
-      json(res, 200, {
-        ok: true,
-        entries: items,
-        total: items.length,
-        resolved,
-        missing: items.length - resolved,
-        truncated: text.length > MAX_REFERENCE_CHARS,
-      });
     },
   });
 

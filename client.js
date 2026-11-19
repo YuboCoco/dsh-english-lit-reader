@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     const PDFCSS_ID = 'english-lit-reader-pdfcss';
     const KATEXCSS_ID = 'english-lit-reader-katexcss';
     // Cache-buster: a stale browser bundle may still point at the old asset set.
-    const ASSET_V = '?v=1.0.51';
+    const ASSET_V = '?v=1.0.52';
     const asset = (name) => VENDOR + name + ASSET_V;
 
     const SIDE_DEFAULT = 380;
@@ -1094,6 +1094,20 @@ window.__ModuleLoader__.load({
       '.elr-ref-link { display: block; margin-top: 3px; font-size: 11px; color: var(--dsw-alias-brand-primary); word-break: break-all; text-decoration: none; }',
       '.elr-ref-link:hover { text-decoration: underline; }',
       '.elr-ref-missing { margin-top: 3px; font-size: 11px; color: var(--dsw-alias-state-warn-primary); }',
+      // (v52) The bibliography row now leads with the ORIGINAL entry, with parsed
+      // fields and the link stacked above it. The raw text is clamped to four lines
+      // so one garbled entry cannot push the rest of the list off screen; the whole
+      // string stays in the DOM for selection and for the page-range tooltip.
+      '.elr-ref-raw { margin-top: 3px; font-size: 11px; line-height: 1.55; color: var(--dsw-alias-label-secondary); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }',
+      '.elr-ref-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }',
+      '.elr-ref-chip { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l1); font-size: 10px; line-height: 1.6; color: var(--dsw-alias-label-secondary); }',
+      '.elr-ref-chip.is-provided { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }',
+      '.elr-ref-chip.is-matched { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); }',
+      '.elr-ref-chip.is-confirm, .elr-ref-chip.is-retry { border-color: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); }',
+      '.elr-ref-chip.is-none, .elr-ref-chip.is-legacy { color: var(--dsw-alias-label-secondary); }',
+      '.elr-ref-row .elr-ref-link { margin-top: 0; flex: 1 1 120px; min-width: 0; }',
+      '.elr-ref-row .elr-ref-missing { margin-top: 0; }',
+      '.elr-refs-stage { flex: 0 0 auto; padding: 4px 12px 6px; font-size: 11px; color: var(--dsw-alias-label-secondary); border-bottom: 1px solid var(--dsw-alias-border-l1); }',
     ].join('\n');
 
     function installCss() {
@@ -1942,6 +1956,10 @@ window.__ModuleLoader__.load({
       // transient busy flag: the analysis text is already usable while the addresses
       // are still being resolved.
       const [referencesBusy, setReferencesBusy] = React.useState(false);
+      // (v52) Free-form status for the bibliography run: which stage is running and
+      // how the address lookups ended. Kept separate from the toast line so the
+      // column can explain itself after the toast is gone.
+      const [referencesStage, setReferencesStage] = React.useState('');
       const [status, setStatus] = React.useState('');
       const [statusKind, setStatusKind] = React.useState('');
       const [dragOver, setDragOver] = React.useState(false);
@@ -2029,6 +2047,11 @@ window.__ModuleLoader__.load({
       const selEffortRef = React.useRef(selEffort);
       selEffortRef.current = selEffort;
       const effortSeqRef = React.useRef(0);
+      // (v52) Every bibliography run carries a ticket: the paper id it was started
+      // for plus a monotonic number. A response whose ticket no longer matches the
+      // current paper (or a newer run) must not touch the list or the saved cache —
+      // otherwise switching A -> B mid-flight drops A's links onto B.
+      const refRunRef = React.useRef({ paper: '', seq: 0 });
       const paperIdRef = React.useRef(paperId);
       paperIdRef.current = paperId;
       const marksRef = React.useRef(marks);
@@ -2415,7 +2438,76 @@ window.__ModuleLoader__.load({
           const page = await pdf.getPage(p);
           const tc = await page.getTextContent();
           const items = (tc && tc.items) || [];
-          pages.push(items.map((it) => (it && it.str) || '').join(' '));
+          // (v52) Rebuild LINES, not one long run of words. `hasEOL` marks the end
+          // of a rendered line, so keeping it is what lets the bibliography parser
+          // see entry boundaries at all: joined with spaces, `[1] … [2] …` becomes
+          // a single line and every entry runs together.
+          const out = [];
+          let line = '';
+          let sawEol = false;
+          for (let k = 0; k < items.length; k++) {
+            if (items[k] && items[k].hasEOL) sawEol = true;
+          }
+          if (sawEol) {
+            for (let k = 0; k < items.length; k++) {
+              const it = items[k];
+              line += (it && it.str) || '';
+              if ((it && it.hasEOL) || k === items.length - 1) {
+                const value = line.replace(/\s+/g, ' ').trim();
+                if (value) out.push(value);
+                line = '';
+              }
+            }
+          } else {
+            // No `hasEOL` on this page: group by the baseline instead, which is the
+            // same information pdf.js drew from. A two-column page interleaves both
+            // columns on the same baseline, so each group is re-ordered by x and the
+            // page is emitted column-major when a clear central gutter exists.
+            const rows = new Map();
+            for (let k = 0; k < items.length; k++) {
+              const it = items[k];
+              if (!it || !it.str) continue;
+              const x = it.transform && Number.isFinite(it.transform[4]) ? it.transform[4] : 0;
+              const y = it.transform && Number.isFinite(it.transform[5]) ? Math.round(it.transform[5] * 2) / 2 : 0;
+              if (!rows.has(y)) rows.set(y, []);
+              rows.get(y).push({ x, str: it.str });
+            }
+            const xs = [];
+            rows.forEach((cells) => { for (const cell of cells) xs.push(cell.x); });
+            // The gutter sits at the middle of the page's horizontal SPAN, not at the
+            // median item x: with two equal columns the median lands exactly on the
+            // right column's first item, which then reads as "no right column".
+            const minX = xs.length ? Math.min.apply(null, xs) : 0;
+            const maxX = xs.length ? Math.max.apply(null, xs) : 0;
+            const mid = (minX + maxX) / 2;
+            const left = [];
+            const right = [];
+            const single = [];
+            const yOrder = Array.from(rows.keys()).sort((a, b) => b - a);
+            let spread = false;
+            for (const y of yOrder) {
+              const cells = rows.get(y).slice().sort((a, b) => a.x - b.x);
+              const hasLeft = cells.some((cell) => cell.x < mid - 8);
+              const hasRight = cells.some((cell) => cell.x > mid + 8);
+              if (hasLeft && hasRight) spread = true;
+              const text = cells.map((cell) => cell.str).join('').replace(/\s+/g, ' ').trim();
+              if (!text) continue;
+              single.push(text);
+              if (hasLeft) left.push(cells.filter((cell) => cell.x <= mid).map((cell) => cell.str).join('').replace(/\s+/g, ' ').trim());
+              if (hasRight) right.push(cells.filter((cell) => cell.x > mid).map((cell) => cell.str).join('').replace(/\s+/g, ' ').trim());
+            }
+            // Column-major only when BOTH columns actually carried lines: on a
+            // single-column page a stray wide line would otherwise land in `right`
+            // and get moved to the end of the page.
+            const useColumns = spread && left.length >= 3 && right.length >= 3;
+            if (useColumns) {
+              for (const text of left) if (text) out.push(text);
+              for (const text of right) if (text) out.push(text);
+            } else {
+              for (const text of single) out.push(text);
+            }
+          }
+          pages.push(out.join('\n'));
           // (v13 #1) Yield every 3 pages rather than every 10. `yield` uses a
           // macrotask so pdf.js rendering / scrolling can interleave instead of
           // the extraction monopolising the main thread for a long stretch.
@@ -3303,32 +3395,227 @@ window.__ModuleLoader__.load({
       // model returns, and this fills in the 参考文献 column underneath it. A
       // failure here must never invalidate the analysis, so everything is caught
       // and reported through the status line instead of thrown.
-      const doReferences = async () => {
+      const doReferences = async (options) => {
         if (!text.trim()) return;
+        const onlyIds = options && Array.isArray(options.ids) ? options.ids : null;
+        const paper = paperIdRef.current;
+        // (v52) A run with no paper id cannot be cached anywhere, and its responses
+        // could never be matched to a document: refuse instead of writing into the
+        // "no paper" slot that every other paper would then read.
+        if (!paper) { notify(t('references.needPaper'), 'error'); return; }
+        // A retry of the failed rows is part of the SAME logical run: it reuses the
+        // ticket of the list being patched instead of invalidating it.
+        const ticket = onlyIds
+          ? { paper, seq: refRunRef.current.seq }
+          : { paper, seq: refRunRef.current.seq + 1 };
+        refRunRef.current = ticket;
+        // Alive means: the paper this run was started for is STILL the open paper,
+        // and no newer full run has superseded it. Comparing the ticket against
+        // itself would always pass — the live paper id is the half that matters,
+        // because switching papers does not touch the ticket.
+        const alive = () => paperIdRef.current === paper && refRunRef.current.seq === ticket.seq;
         setReferencesBusy(true);
+        setReferencesStage(t('references.stage.segment'));
         notify(t('references.running'));
         try {
-          const data = await post('/references', Object.assign({ text }, bodyRef.current()), 180000);
-          if (data && data.ok) {
-            const list = Array.isArray(data.entries) ? data.entries : [];
-            setReferences(list);
-            saveResult(paperIdRef.current, { references: list });
-            const missing = Number(data.missing) || 0;
-            notify(
-              t('references.ready')
-                .replace('{total}', String(list.length))
-                .replace('{found}', String(Number(data.resolved) || 0))
-                .replace('{missing}', String(missing)),
-              missing ? 'warn' : 'ok'
-            );
+          // Stage 1 — locate and split, no model and no network: the original lines
+          // are on screen immediately, in document order, with their own numbering.
+          // A retry of specific rows skips this stage: the rows already exist, and
+          // re-segmenting would cost another model call and could renumber them.
+          const body = Object.assign({ text }, bodyRef.current());
+          let current;
+          if (onlyIds) {
+            // A retry works on the FULL list: dropping the rows we are not retrying
+            // would blank most of the column. Only the work is narrowed to the
+            // requested ids, below.
+            current = references.slice();
+            if (!current.length) { notify(t('references.retryNone'), 'ok'); setReferencesBusy(false); return; }
+            notify(t('references.stage.retry'), 'ok');
           } else {
-            notify((data && data.error) || t('references.failed'), 'error');
+            const segmented = await post('/references/segment', Object.assign({ useModel: true }, body), 120000);
+            if (!alive()) return;
+            if (!segmented || !segmented.ok) {
+              notify((segmented && segmented.error) || t('references.failed'), 'error');
+              setReferencesStage('');
+              return;
+            }
+            const base = Array.isArray(segmented.entries) ? segmented.entries : [];
+            if (!base.length) {
+              notify(t('references.notFound'), 'warn');
+              setReferencesStage(t('references.notFound'));
+              setReferences([]);
+              saveResult(paper, { references: [] });
+              return;
+            }
+            current = mergeReferenceCache(base, paper, onlyIds);
+            setReferences(current);
+            saveResult(paper, { references: current });
+            notify(
+              t('references.segmented')
+                .replace('{total}', String(current.length))
+                .replace('{mode}', segmented.mode === 'author-year' ? t('references.mode.authorYear') : t('references.mode.numbered')),
+              segmented.truncated ? 'warn' : 'ok'
+            );
           }
+
+          // Stage 2 — fill title/zh/authors/venue/year batch by batch. Rows keep
+          // their identity: a batch that fails leaves its rows exactly as they were.
+          const needFields = current
+            .filter((item) => !item.title && item.status !== 'provided')
+            .filter((item) => !onlyIds || onlyIds.indexOf(item.id) !== -1)
+            .map((item) => item.id);
+          if (needFields.length) {
+            setReferencesStage(t('references.stage.fields'));
+            const fields = await post('/references/fields', Object.assign({ entries: current, ids: needFields }, body), 300000);
+            if (!alive()) return;
+            current = applyReferenceFields(current, fields);
+            setReferences(current);
+            saveResult(paper, { references: current });
+          }
+
+          // Stage 3 — addresses. Rows that print their own DOI/arXiv id are marked
+          // "provided" here and never sent to Crossref (they already have a link).
+          // Only rows already MATCHED under the current rules are skipped: a legacy
+          // "found" flag was written by the old single-direction matcher, so it is
+          // re-checked instead of trusted.
+          setReferencesStage(t('references.stage.resolve'));
+          const needLinks = current
+            .filter((item) => item.status !== 'provided' && item.status !== 'matched')
+            .filter((item) => !onlyIds || onlyIds.indexOf(item.id) !== -1)
+            .map((item) => item.id);
+          if (needLinks.length) {
+            const resolved = await post('/references/resolve', Object.assign({ entries: current, ids: needLinks }, body), 300000);
+            if (!alive()) return;
+            current = applyReferenceResolve(current, resolved);
+            setReferences(current);
+            saveResult(paper, { references: current });
+          }
+
+          const counts = countReferenceStatus(current);
+          setReferencesStage(describeReferenceCounts(t, counts, onlyIds ? t('references.stage.retry') : ''));
+          notify(
+            t('references.ready')
+              .replace('{total}', String(current.length))
+              .replace('{found}', String(counts.matched + counts.provided))
+              .replace('{missing}', String(counts.none + counts.confirm + counts.retry + counts.pending)),
+            counts.none + counts.confirm + counts.retry + counts.pending ? 'warn' : 'ok'
+          );
         } catch (error) {
-          notify(String(error && error.message ? error.message : error), 'error');
+          if (alive()) notify(String(error && error.message ? error.message : error), 'error');
         } finally {
-          setReferencesBusy(false);
+          if (alive()) setReferencesBusy(false);
         }
+      };
+
+      // (v52) Re-running must not throw away links already paid for: the positional
+      // id is stable, so old results are merged back by id. A cache written by the
+      // pre-v52 code only has `found`, which is NOT the same claim as "matched by
+      // the current rules" — it is kept but demoted to `legacy` so the row shows
+      // 旧缓存 instead of claiming an address that was never verified.
+      const mergeReferenceCache = (fresh, paper, onlyIds) => {
+        const cached = loadResult(paper) || {};
+        const old = Array.isArray(cached.references) ? cached.references : [];
+        const byId = new Map();
+        for (const item of old) {
+          if (item && item.id) byId.set(String(item.id), item);
+        }
+        return fresh.map((item) => {
+          // A row that prints its own DOI/arXiv id needs nothing from the cache: the
+          // link came out of the paper itself and outranks any stored lookup.
+          if (item.status === 'provided') return Object.assign({}, item, { found: true });
+          const prev = byId.get(item.id);
+          if (!prev) return item;
+          // Rows outside the retry set keep whatever they already had, verbatim.
+          const outsideRetry = Boolean(onlyIds && onlyIds.indexOf(item.id) === -1);
+          // The pre-v52 cache only stored `found`, which does NOT mean the current
+          // matcher would accept it: demote it so the row shows 旧缓存 and gets
+          // re-checked instead of silently claiming a verified address.
+          const stale = !prev.status || prev.status === 'legacy';
+          const status = outsideRetry
+            ? String(prev.status || (prev.found ? 'legacy' : 'pending'))
+            : (stale ? 'legacy' : String(prev.status || 'pending'));
+          return Object.assign({}, item, {
+            title: String(prev.title || prev.en || ''),
+            zh: String(prev.zh || ''),
+            authors: String(prev.authors || ''),
+            venue: String(prev.venue || ''),
+            year: String(prev.year || ''),
+            status,
+            url: String(prev.url || ''),
+            doi: String(prev.doi || ''),
+            found: Boolean(prev.url),
+          });
+        });
+      };
+
+      const applyReferenceFields = (list, payload) => {
+        if (!payload || !payload.ok || !Array.isArray(payload.fields)) return list;
+        const byId = new Map();
+        for (const field of payload.fields) {
+          const id = String((field && field.id) || '');
+          if (id && !byId.has(id)) byId.set(id, field);
+        }
+        return list.map((item) => {
+          const field = byId.get(item.id);
+          if (!field) return item;
+          return Object.assign({}, item, {
+            title: String(field.title || item.title || ''),
+            zh: String(field.zh || item.zh || ''),
+            authors: String(field.authors || item.authors || ''),
+            venue: String(field.venue || item.venue || ''),
+            year: String(field.year || item.year || ''),
+            status: item.status === 'provided' ? 'provided' : (item.status === 'pending' ? 'fields' : item.status),
+          });
+        });
+      };
+
+      const applyReferenceResolve = (list, payload) => {
+        if (!payload || !payload.ok || !Array.isArray(payload.results)) return list;
+        const byId = new Map();
+        for (const hit of payload.results) {
+          const id = String((hit && hit.id) || '');
+          if (id && !byId.has(id)) byId.set(id, hit);
+        }
+        return list.map((item) => {
+          const hit = byId.get(item.id);
+          if (!hit) return item;
+          return Object.assign({}, item, {
+            status: String(hit.status || item.status),
+            reason: String(hit.reason || ''),
+            url: String(hit.url || item.url || ''),
+            doi: String(hit.doi || item.doi || ''),
+            found: Boolean(hit.url) || item.status === 'provided',
+            matchedTitle: String(hit.matchedTitle || ''),
+            matchedYear: String(hit.matchedYear || ''),
+          });
+        });
+      };
+
+      const countReferenceStatus = (list) => {
+        const counts = { provided: 0, matched: 0, confirm: 0, none: 0, retry: 0, pending: 0, fields: 0, legacy: 0 };
+        for (const item of list) {
+          const status = String((item && item.status) || 'pending');
+          if (counts[status] == null) counts.pending += 1;
+          else counts[status] += 1;
+        }
+        return counts;
+      };
+
+      const retryReferenceFailures = () => {
+        const ids = references.filter((item) => item && (item.status === 'retry' || item.status === 'pending' || item.status === 'fields')).map((item) => item.id);
+        if (!ids.length) { notify(t('references.retryNone'), 'ok'); return; }
+        doReferences({ ids });
+      };
+
+      const describeReferenceCounts = (translate, counts, prefix) => {
+        const parts = [];
+        if (counts.provided) parts.push(translate('references.status.provided') + ' ' + counts.provided);
+        if (counts.matched) parts.push(translate('references.status.matched') + ' ' + counts.matched);
+        if (counts.confirm) parts.push(translate('references.status.confirm') + ' ' + counts.confirm);
+        if (counts.none) parts.push(translate('references.status.none') + ' ' + counts.none);
+        if (counts.retry) parts.push(translate('references.status.retry') + ' ' + counts.retry);
+        if (counts.legacy) parts.push(translate('references.status.legacy') + ' ' + counts.legacy);
+        return (prefix ? prefix + ' · ' : '') + parts.join(' · ');
       };
 
       const doSummary = async () => {
@@ -5070,45 +5357,69 @@ window.__ModuleLoader__.load({
         )
       );
 
-      const referencesBody = referencesBusy && !references.length
-          ? h('div', { className: 'elr-refs-empty' }, t('references.running'))
-          : (references.length
-            ? h('div', { className: 'elr-refs-list' }, references.map((item, index) => {
-                const en = String((item && item.en) || '');
-                const zh = String((item && item.zh) || '');
-                const found = Boolean(item && item.found && item.url);
-                const meta = [item && item.venue, item && item.year].filter(Boolean).join(' · ');
-                return h('div', { key: (item && item.doi) || ('ref' + index), className: 'elr-ref' },
-                  h('div', { className: 'elr-ref-index' }, '[' + (index + 1) + ']'),
-                  h('div', { className: 'elr-ref-body' },
-                    h('div', { className: 'elr-ref-en' }, en || t('references.untitled')),
-                    zh ? h('div', { className: 'elr-ref-zh' }, zh) : null,
-                    meta ? h('div', { className: 'elr-ref-meta' }, meta) : null,
-                    found
-                      ? h('a', {
-                          className: 'elr-ref-link',
-                          href: item.url,
-                          target: '_blank',
-                          rel: 'noreferrer noopener',
-                          title: item.url,
-                        }, item.url)
-                      : h('div', { className: 'elr-ref-missing' }, t('references.missing'))
-                  )
-                );
-              }))
-            : h('div', { className: 'elr-refs-empty' }, t('references.placeholder')));
+      // (v52) One row per bibliography entry. The ORIGINAL text is always the body
+      // of the row so the numbering can be checked against the paper; the Chinese
+      // title and the link are additive layers that arrive later, and the status
+      // chip says exactly which of them is present.
+      const referencesBody = (() => {
+        if (!references.length) {
+          return h('div', { className: 'elr-refs-empty' },
+            referencesBusy ? t('references.running') : t('references.placeholder'));
+        }
+        return h('div', { className: 'elr-refs-list' }, references.map((item, index) => {
+          const raw = String((item && item.raw) || '');
+          const en = String((item && (item.title || item.en)) || '');
+          const zh = String((item && item.zh) || '');
+          const status = String((item && item.status) || 'pending');
+          const url = String((item && item.url) || '');
+          const number = String((item && item.number) || '');
+          const pages = String((item && item.pages) || '');
+          const meta = [item && item.authors, item && item.venue, item && item.year].filter(Boolean).join(' · ');
+          const chip = t('references.status.' + (status === 'fields' ? 'pending' : status));
+          return h('div', { key: (item && item.id) || ('ref' + index), className: 'elr-ref is-' + status },
+            h('div', { className: 'elr-ref-index' }, number ? '[' + number + ']' : '[' + (index + 1) + ']'),
+            h('div', { className: 'elr-ref-body' },
+              en ? h('div', { className: 'elr-ref-en' }, en) : null,
+              zh ? h('div', { className: 'elr-ref-zh' }, zh) : null,
+              meta ? h('div', { className: 'elr-ref-meta' }, meta) : null,
+              // The original line is kept visible under the parsed fields: it is the
+              // only thing that can be checked against the printed bibliography.
+              raw ? h('div', { className: 'elr-ref-raw', title: pages ? t('references.page') + ' ' + pages : undefined }, raw) : null,
+              h('div', { className: 'elr-ref-row' },
+                h('span', { className: 'elr-ref-chip is-' + status, title: t('references.statusHint.' + (status === 'fields' ? 'pending' : status)) }, chip),
+                url
+                  ? h('a', { className: 'elr-ref-link', href: url, target: '_blank', rel: 'noreferrer noopener', title: url }, url)
+                  : null,
+                status === 'none' ? h('span', { className: 'elr-ref-missing' }, t('references.missing')) : null
+              )
+            )
+          );
+        }));
+      })();
 
+      const referenceCounts = countReferenceStatus(references);
       const referencesPanel = h('div', { className: 'elr-col' },
         h('div', { className: 'elr-toolbar' },
-          h('button', { className: 'elr-btn primary', disabled: referencesBusy || !text.trim(), onClick: doReferences },
+          h('button', { className: 'elr-btn primary', disabled: referencesBusy || !text.trim(), onClick: () => doReferences() },
             referencesBusy ? t('references.running') : (references.length ? t('references.rerun') : t('references.run'))),
+          references.length
+            ? h('button', {
+                className: 'elr-btn',
+                disabled: referencesBusy,
+                title: t('references.retryHint'),
+                onClick: retryReferenceFailures,
+              }, t('references.retry'))
+            : null,
           h('span', { className: 'elr-spacer' }),
           references.length
             ? h('span', { className: 'elr-refs-count' }, t('references.count')
                 .replace('{total}', String(references.length))
-                .replace('{found}', String(references.filter((x) => x && x.found).length)))
+                .replace('{found}', String(referenceCounts.matched + referenceCounts.provided)))
             : null
         ),
+        referencesStage && references.length
+          ? h('div', { className: 'elr-refs-stage' }, referencesStage)
+          : null,
         h('div', { className: 'elr-out elr-refs-out' }, referencesBody)
       );
 
@@ -6154,6 +6465,37 @@ window.__ModuleLoader__.load({
             'references.count': '{total} entries · {found} with address',
             'references.missing': 'Not found',
             'references.untitled': '(no title parsed)',
+            // (v52) Progressive bibliography. The column now shows the original
+            // entries first and fills in the Chinese title and the address later, so
+            // it needs its own vocabulary: which stage is running, and what each
+            // row's status chip actually claims.
+            'references.stage.segment': 'Locating the bibliography and splitting it into entries…',
+            'references.stage.fields': 'Reading titles and authors from each entry…',
+            'references.stage.resolve': 'Looking up addresses…',
+            'references.stage.retry': 'Retrying the unfinished entries',
+            'references.segmented': 'Found {total} entries ({mode}). Addresses are being filled in.',
+            'references.mode.numbered': 'numbered list',
+            'references.mode.authorYear': 'author–year list',
+            'references.notFound': 'No bibliography heading or numbered list was found. Open the references page yourself, or paste the list into the text box.',
+            'references.needPaper': 'Open a PDF first: the bibliography is cached per paper.',
+            'references.retry': 'Retry unfinished',
+            'references.retryHint': 'Retry only the entries that are still pending, unconfirmed or temporarily failed',
+            'references.retryNone': 'Every entry is already resolved.',
+            'references.page': 'Pages',
+            'references.status.provided': 'From the text',
+            'references.status.matched': 'Matched',
+            'references.status.confirm': 'Needs confirmation',
+            'references.status.none': 'No match',
+            'references.status.retry': 'Temporarily failed',
+            'references.status.pending': 'Pending',
+            'references.status.legacy': 'Old cache',
+            'references.statusHint.provided': 'The entry prints its own DOI or arXiv id, so no lookup was made',
+            'references.statusHint.matched': 'A single candidate matches the title, year and authors',
+            'references.statusHint.confirm': 'Several candidates or a title variant — check before using the link',
+            'references.statusHint.none': 'Crossref and OpenAlex were both searched and nothing matched',
+            'references.statusHint.retry': 'The address service was rate limited or unreachable — press retry',
+            'references.statusHint.pending': 'Waiting for its batch',
+            'references.statusHint.legacy': 'Saved by an older version that only stored "found" — treated as unverified',
             // (v21 #2) Launcher capsule description in the right-hand guide panel.
             'guide.desc': 'Open the literature reader in the right column',
           },
@@ -6263,6 +6605,34 @@ window.__ModuleLoader__.load({
             'references.count': '共 {total} 条 · {found} 条有地址',
             'references.missing': '未找到',
             'references.untitled': '（未识别到标题）',
+            // (v52) 渐进式参考文献：先显示原文条目，再逐批补中文标题与地址。
+            'references.stage.segment': '正在定位参考文献区并分条…',
+            'references.stage.fields': '正在逐条识别标题与作者…',
+            'references.stage.resolve': '正在查找地址…',
+            'references.stage.retry': '正在重试未完成的条目',
+            'references.segmented': '已找到 {total} 条（{mode}），正在补充地址。',
+            'references.mode.numbered': '编号列表',
+            'references.mode.authorYear': '作者—年份列表',
+            'references.notFound': '没有找到参考文献标题，也没有识别出连续编号。可以翻到参考文献页重新触发，或把文献列表粘贴到文本框里。',
+            'references.needPaper': '请先打开一份 PDF：参考文献按论文缓存。',
+            'references.retry': '重试未完成',
+            'references.retryHint': '只重跑仍在等待、待确认或暂时失败的条目',
+            'references.retryNone': '所有条目都已经处理完毕。',
+            'references.page': '页码',
+            'references.status.provided': '原文提供',
+            'references.status.matched': '已匹配',
+            'references.status.confirm': '待确认',
+            'references.status.none': '无匹配',
+            'references.status.retry': '暂时失败',
+            'references.status.pending': '待处理',
+            'references.status.legacy': '旧缓存',
+            'references.statusHint.provided': '该条目原文自带 DOI 或 arXiv 编号，没有发起查询',
+            'references.statusHint.matched': '有唯一候选同时匹配标题、年份与作者',
+            'references.statusHint.confirm': '存在多个候选或标题存在版本差异，使用链接前请核对',
+            'references.statusHint.none': 'Crossref 与 OpenAlex 都查过，没有匹配项',
+            'references.statusHint.retry': '地址服务限流或不可达，可点「重试未完成」再跑一次',
+            'references.statusHint.pending': '还在等自己那一批',
+            'references.statusHint.legacy': '旧版本只存了「已找到」，视为未经当前规则验证',
             // (v21 #2) 右侧「开始」面板里的启动入口。
             'guide.desc': '在右栏打开英文文献阅读器',
           },
