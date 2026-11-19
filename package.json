@@ -42,6 +42,7 @@
     "promo/*.png",
     "promo/*.md",
     "promo/*.py",
+    "screenshots.json",
     "vendor/*.js",
     "vendor/*.css",
     "vendor/PDFJS-LICENSE",
