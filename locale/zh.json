@@ -195,6 +195,8 @@
   "references.mode.numbered": "编号列表",
   "references.mode.authorYear": "作者—年份列表",
   "references.notFound": "没有找到参考文献标题，也没有识别出连续编号。可以翻到参考文献页重新触发，或把文献列表粘贴到文本框里。",
+  "references.partial": " · 已在最后一条引文后截断（跳过 {lines} 行）",
+  "references.partialDropped": " · 参考文献之后有 {rows} 条编号行并非引文，已丢弃",
   "references.retry": "重试未完成",
   "references.retryHint": "只重跑仍在等待、待确认或暂时失败的条目",
   "references.retryNone": "所有条目都已经处理完毕。",

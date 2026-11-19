@@ -5,6 +5,21 @@
 版本号规则：`x.y.z`，其中 `y` 每轮需求 +1。
 
 ---
+### v53 · 1.0.53
+
+**参考文献后面多出四条「错误条目」：附录被当成正文目录一起吞了**
+
+- 现象：一份 Mamba 论文，正确的参考文献后面又多出 4 条，内容是附录里的步骤句子（「We read in 𝑂(𝐵𝐿𝐷+𝐷𝑁) bytes of memory…」「We discretize to produce 𝑨, 𝑩…」「We perform a parallel associative scan…」「We multiply and sum with 𝑪…」），第 4 条甚至把整个附录、Table 11–14 与 E/E.3 节全部吞进同一条。
+- 根因：参考文献的**区段从未结束**。`locateReferenceLines()` 只在命中 `REFERENCE_END_RE`（appendix / supplementary / acknowledgements / 致谢 等关键词）时才截断，而这篇论文的附录标题是 `E Experimental Details and Additional Results` —— 只有一个字母加标题，任何关键词表都认不出来，于是区段一路延伸到文末。区段内的附录步骤本身是编号行（`1. …` `2. …`），正好满足 `matchReferenceNumber`，于是每一条都开了一个新「条目」。所以那 4 条不是解析错了的参考文献，而是**区段没关好放进来的附录正文**。
+- 做法一（区段边界换判据）：新增 `REFERENCE_CAPTION_RE`（`Table 11:` / `Figure 3.` 这类图表题注）。题注永远不可能是一条参考文献的续行，看到它就是「已经越过参考文献」的硬证据 —— 这是唯一能抓住「字母编号附录」的判据，因为它的标题里没有任何可枚举的词。同时新增 `isProseLine()`（≥40 字符、以 `.!?` 结尾、不含年份/出版词、≥12 个词）：一条引文之后出现这种整句散文，同样立即截断。
+- 做法二（条目本身换判据）：编号行不等于引文。新增长度上限（`MAX_ENTRY_LINES = 14` / `MAX_ENTRY_CHARS = 2000`）截断无限吞并；并对**尾部**条目做引文特征过滤 —— 一条真引文至少含年份、出版/会议关键词、`Surname, A.` 形态的作者、或 DOI/arXiv 号之一。从末尾往前找最后一个具备这些特征的条目，其后的一律丢弃。
+- 反向保护（很重要）：过滤只在「最后一条真引文之后」生效，所以**没有年份的参考文献不会被清空**。实测用例：三条只有 GitHub 链接的仓储引用、两条只有出版词没有年份的条目，都完整保留。
+- 另修：`looksLikeReferenceRun()` 原本硬性要求 3 条佐证，导致只有 2 条参考文献的短目录被整体拒绝（返回 0 条）。现在「标题后剩余不足 6 行」时只要求 2 条佐证 —— 目录里的假 References 尾巴都很长，3 条的守卫在那种场景仍然成立。
+- 界面：截断不再是静默的。`/references/segment` 增加 `tailLines`、`droppedTail`、`endReason` 三个字段，右栏在状态行末尾分别提示「已在最后一条引文后截断（跳过 N 行）」或「参考文献之后有 N 条编号行并非引文，已丢弃」，两种截断原因分开说，避免出现「跳过 0 行」这种自相矛盾的提示。
+- 验证：Host 侧切出纯解析函数在 vm 里跑回归 15/15（含本次的 Mamba 场景：4 条真引文、末条仅 107 字符、附录词零残留、`truncated=true`；以及无年份目录、仅出版词目录、题注边界、无参考文献、DOI/arXiv 提取、`titleScore` 四个定值用例）。四份词典 212 键一致。live 复测 `POST /references/segment` → `total=4`、`droppedTail=4`、`endReason=non-citation-tail`、第 4 条 107 字符且保留 arXiv 号。
+
+---
+
 ### v52 · 1.0.52
 
 **参考文献重做：先出原文条目，再逐批补标题与地址**

@@ -595,6 +595,20 @@ async function modelEfforts(llm, provider, model) {
 // ---------------------------------------------------------------------------
 const REFERENCE_HEADING_RE = /^\s*(?:(?:\d+|[IVXLC]+)[.)]?\s*)?(references|bibliography|works\s+cited|literature\s+cited|参考文献|引用文献)\s*[:：]?\s*$/i;
 const REFERENCE_END_RE = /^\s*(?:(?:\d+|[IVXLC]+)[.)]?\s*)?(appendix|appendices|supplementary|supplemental|supporting\s+information|acknowledge?ments?\b|author\s+biograph|about\s+the\s+authors|附录|致谢|补充材料)/i;
+// A caption line never opens a bibliography entry, so its presence proves we have
+// left the reference section — this is what catches the very common layout whose
+// appendix heading is a bare letter ("E Experimental Details") that no word list
+// can recognise.
+const REFERENCE_CAPTION_RE = /^\s*(?:table|figure|fig\.)\s*[A-Z]?\d+[.:)]/i;
+// Page renders in the appendix often start with a bare folio number. A line that
+// is ONLY a number is not an entry body, but folios also appear INSIDE a long
+// bibliography, so this is used as a boundary only together with a caption.
+const PAGE_FOLIO_RE = /^\s*\d{1,4}\s*$/;
+// How much text one entry may accumulate before the region is judged to have run
+// past the bibliography. Real entries are a handful of lines; the appendix being
+// welded onto the last entry is what this catches, and the cut is reported.
+const MAX_ENTRY_CHARS = 2000;
+const MAX_ENTRY_LINES = 14;
 // Leading numbers: "[12]", "12.", "12)", "(12)". The bracket form is the one that
 // actually survives PDF extraction with a stable shape, so it is tried first.
 const REFERENCE_NUMBER_RES = [
@@ -604,6 +618,33 @@ const REFERENCE_NUMBER_RES = [
 ];
 // Author-year fallback: "Surname, A." / "Surname, A., Surname, B." at line start.
 const AUTHOR_YEAR_START_RE = /^[A-Z][A-Za-z\u00c0-\u024f'’\-]{1,30},\s*(?:[A-Z]\.|[A-Z][a-z]+|&)/;
+// (v52) What makes a numbered line a CITATION rather than a numbered paragraph.
+// An appendix step ("1. We read in O(BLD+DN) bytes of memory …") carries none of
+// these, and the bibliography never resumes after prose, so the first numbered
+// block without any signal marks the end of the section.
+const CITATION_YEAR_RE = /\b(19|20)\d{2}\b/;
+const CITATION_VENUE_RE = /\b(proceedings|journal|conference|transactions|symposium|workshop|arxiv|doi|vol\.?|pp\.?|eds?\.|press|springer|ieee|acm|neurips|nips|cvpr|iccv|icml|iclr|aaai|acl|emnlp|naacl|ijcai|kdd|sigir|corl|preprint|et al\.)/i;
+const CITATION_AUTHOR_RE = /\b[A-Z][a-z]+,\s*(?:[A-Z]\.|[A-Z][a-z]+)|^\s*[A-Z]\.\s+[A-Z][a-z]+/;
+
+// (v52) "Prose" = a full sentence, not a citation fragment. Twelve words plus a
+// closing period is the shape of running text; a bibliography line is either much
+// shorter ("Mamba codebase.") or carries a marker (a year, a venue, initials).
+// This is what stops an appendix paragraph from being absorbed by the last entry.
+function isProseLine(value) {
+  const text = String(value == null ? "" : value).trim();
+  if (!text) return false;
+  if (text.length < 40) return false;
+  if (!/[.!?]["'”’)]?$/.test(text)) return false;
+  if (CITATION_YEAR_RE.test(text) || CITATION_VENUE_RE.test(text)) return false;
+  const words = text.split(/\s+/).filter((word) => word.length > 0);
+  return words.length >= 12;
+}
+
+function looksLikeCitation(raw) {
+  const text = String(raw == null ? "" : raw);
+  if (CITATION_YEAR_RE.test(text) || CITATION_VENUE_RE.test(text) || CITATION_AUTHOR_RE.test(text)) return true;
+  return Boolean(findPrintedIdentifier(text));
+}
 
 function splitLines(text) {
   const source = String(text == null ? "" : text);
@@ -634,8 +675,12 @@ function locateReferenceLines(lines) {
     const text = lines[i].t;
     if (text.length > 60) continue;
     if (!REFERENCE_HEADING_RE.test(text)) continue;
-    // A heading is followed by reference-like lines, not by prose.
-    if (looksLikeReferenceRun(lines, i + 1, 3) || i >= lines.length - 3) { start = i + 1; break; }
+    // A heading is followed by reference-like lines, not by prose. A short tail
+    // (fewer than 6 lines left) settles for 2 confirmations — otherwise a real but
+    // small bibliography was rejected outright; a mid-document "References" in a
+    // table of contents always has a long tail, so the 3-hit guard still holds there.
+    const need = lines.length - (i + 1) < 6 ? 2 : 3;
+    if (looksLikeReferenceRun(lines, i + 1, need) || i >= lines.length - 3) { start = i + 1; break; }
   }
   let found = start !== -1;
   if (!found) {
@@ -661,8 +706,18 @@ function locateReferenceLines(lines) {
   }
   if (start === -1) return { lines: [], found: false, reason: "no-heading" };
   let end = lines.length;
+  let endReason = "document-end";
   for (let i = start; i < lines.length; i++) {
-    if (REFERENCE_END_RE.test(lines[i].t) && lines[i].t.length <= 80) { end = i; break; }
+    const text = lines[i].t;
+    if (text.length > 80) continue;
+    // (v52) The word list alone is not enough. Most papers put the appendix AFTER
+    // the bibliography under a heading that is just a letter and a title
+    // ("E Experimental Details and Additional Results"), which no keyword list
+    // recognises — so the tail of the document silently became part of the last
+    // entry, and its numbered procedure lines were then read as citations. Any
+    // table/figure caption is proof that we are past the bibliography.
+    if (REFERENCE_END_RE.test(text)) { end = i; endReason = "heading"; break; }
+    if (REFERENCE_CAPTION_RE.test(text)) { end = i; endReason = "caption"; break; }
   }
   const slice = lines.slice(start, end);
   let chars = 0;
@@ -672,7 +727,7 @@ function locateReferenceLines(lines) {
     if (chars > MAX_REFERENCE_CHARS) return { lines: capped, found, reason: "capped", start, end, fullLength: slice.length };
     capped.push(line);
   }
-  return { lines: capped, found, reason: found ? "heading" : "numbering", start, end };
+  return { lines: capped, found, reason: found ? "heading" : "numbering", start, end, endReason };
 }
 
 function looksLikeReferenceRun(lines, from, need) {
@@ -748,6 +803,19 @@ function segmentReferenceEntries(lines) {
     }
     current = null;
   };
+  // (v52) An entry cannot grow without bound. When the bibliography is followed by
+  // prose that no heading marks (an appendix, a long caption block), every line
+  // used to be appended to the LAST entry — which is exactly how four numbered
+  // steps of an appendix came to be read as four extra citations. A run that
+  // exceeds the shape of a real entry now ends the section instead, and the
+  // caller reports how much was left unread so the reader can see why.
+  let cutAt = -1;
+  const tooLong = (parts) => {
+    if (parts.length > MAX_ENTRY_LINES) return true;
+    let size = 0;
+    for (const part of parts) size += part.length + 1;
+    return size > MAX_ENTRY_CHARS;
+  };
   for (let i = 0; i < list.length; i++) {
     const line = list[i];
     const text = line.t;
@@ -766,6 +834,11 @@ function segmentReferenceEntries(lines) {
     if (!current) {
       current = { number: "", parts: [text], pages: pageRange([line]), lineFrom: i, lineTo: i };
     } else {
+      if (tooLong(current.parts.concat([text]))) { cutAt = i; break; }
+      // Prose after a citation ends the section. This is the appendix case that a
+      // heading word list cannot catch: the last entry keeps absorbing paragraphs
+      // of running text and its numbered steps then read as citations.
+      if (isProseLine(text) && current.parts.length >= 1 && looksLikeCitation(current.parts.join(" "))) { cutAt = i; break; }
       current.parts.push(text);
       current.lineTo = i;
       const p = current.pages;
@@ -774,7 +847,36 @@ function segmentReferenceEntries(lines) {
     }
   }
   push();
-  return { entries, mode: useNumbering ? "numbering" : "author-year" };
+  // (v52) A numbered line is not automatically a citation. Appendices very often
+  // contain a numbered procedure ("1. We read in O(BLD+DN) bytes of memory …"),
+  // and in a paper whose appendix follows the bibliography those steps land in the
+  // same region and each becomes a fake entry. A real citation carries at least one
+  // of: a year, a venue/publisher keyword, an author-with-initials, a DOI/arXiv id.
+  // Trailing entries with none of those are cut — but only after an entry that DOES
+  // carry a signal, so a bibliography of undated standards is never emptied.
+  const signal = (entry) => {
+    const raw = entry.raw || "";
+    if (CITATION_YEAR_RE.test(raw) || CITATION_VENUE_RE.test(raw) || CITATION_AUTHOR_RE.test(raw)) return true;
+    return Boolean(findPrintedIdentifier(raw));
+  };
+  let last = entries.length - 1;
+  while (last >= 0 && !signal(entries[last])) last -= 1;
+  if (last >= 0 && last < entries.length - 1 && signal(entries[last])) {
+    const dropped = entries.length - 1 - last;
+    entries.length = last + 1;
+    return {
+      entries,
+      mode: useNumbering ? "numbering" : "author-year",
+      cutAt: cutAt >= 0 ? cutAt : -1,
+      tailLines: cutAt >= 0 ? list.length - cutAt : 0,
+      droppedTail: dropped,
+      // (v53) These dropped entries came from numbered lines after the bibliography
+      // (an appendix procedure), not from lines we failed to read — report the count
+      // so the UI never says "skipped 0 lines".
+      endReason: "non-citation-tail",
+    };
+  }
+  return { entries, mode: useNumbering ? "numbering" : "author-year", cutAt, cutFrom: cutAt >= 0 ? cutAt : -1, tailLines: cutAt >= 0 ? list.length - cutAt : 0 };
 }
 
 function pageRange(lines) {
@@ -847,8 +949,17 @@ function finishSegment(segmented, located) {
     entries: entries.slice(0, MAX_REFERENCE_ENTRIES),
     mode: segmented.mode,
     reason: located.reason,
-    truncated: entries.length > MAX_REFERENCE_ENTRIES || Boolean(located.fullLength),
+    // (v52) Report a shortened region rather than hiding it: `tailLines` is how
+    // many lines after the cut were NOT read, so the UI can say so and offer the
+    // retry instead of pretending the bibliography simply ended there.
+    truncated: entries.length > MAX_REFERENCE_ENTRIES || Boolean(located.fullLength) || Boolean(segmented.cutAt >= 0) || Boolean(segmented.droppedTail > 0),
     fullLength: located.fullLength || 0,
+    tailLines: segmented.tailLines || 0,
+    // (v53) Entries dropped because they were not citations at all — an appendix's
+    // numbered procedure. Counted separately from unread lines, and reported to the
+    // UI so the hint can name the real reason.
+    droppedTail: segmented.droppedTail || 0,
+    endReason: segmented.endReason || located.endReason || "",
   };
 }
 
@@ -1708,6 +1819,12 @@ function buildRoutes(ctx, llm) {
           total: outcome.entries.length,
           truncated: Boolean(outcome.truncated),
           fullLength: outcome.fullLength || 0,
+          // (v53) How much of the tail was left unread and why it stopped: the UI
+          // says "cut after the last citation, N lines skipped" instead of letting a
+          // truncated list look complete.
+          tailLines: outcome.tailLines || 0,
+          droppedTail: outcome.droppedTail || 0,
+          endReason: outcome.endReason || "",
           modelUsed,
         });
       } catch (error) {

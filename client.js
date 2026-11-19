@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     const PDFCSS_ID = 'english-lit-reader-pdfcss';
     const KATEXCSS_ID = 'english-lit-reader-katexcss';
     // Cache-buster: a stale browser bundle may still point at the old asset set.
-    const ASSET_V = '?v=1.0.52';
+    const ASSET_V = '?v=1.0.53';
     const asset = (name) => VENDOR + name + ASSET_V;
 
     const SIDE_DEFAULT = 380;
@@ -3424,6 +3424,9 @@ window.__ModuleLoader__.load({
           // re-segmenting would cost another model call and could renumber them.
           const body = Object.assign({ text }, bodyRef.current());
           let current;
+          // (v53) Set when the bibliography was cut short — the stage line then says
+          // so instead of letting the column look like a complete list.
+          let partialNote = '';
           if (onlyIds) {
             // A retry works on the FULL list: dropping the rows we are not retrying
             // would blank most of the column. Only the work is narrowed to the
@@ -3450,6 +3453,19 @@ window.__ModuleLoader__.load({
             current = mergeReferenceCache(base, paper, onlyIds);
             setReferences(current);
             saveResult(paper, { references: current });
+            // (v53) An appendix that follows the bibliography is cut at the first
+            // caption / prose line; say how many lines were left out so the reader
+            // knows the list is the bibliography and not the whole tail.
+            if (segmented.truncated) {
+              const dropped = Number(segmented.droppedTail) || 0;
+              const skipped = Number(segmented.tailLines) || 0;
+              // (v53) Two different cuts: entries that were not citations at all
+              // (an appendix's numbered procedure) versus lines past the cut we never
+              // read. Naming the right one is what makes the hint trustworthy.
+              partialNote = dropped
+                ? t('references.partialDropped').replace('{rows}', String(dropped))
+                : t('references.partial').replace('{lines}', String(skipped));
+            }
             notify(
               t('references.segmented')
                 .replace('{total}', String(current.length))
@@ -3492,7 +3508,7 @@ window.__ModuleLoader__.load({
           }
 
           const counts = countReferenceStatus(current);
-          setReferencesStage(describeReferenceCounts(t, counts, onlyIds ? t('references.stage.retry') : ''));
+          setReferencesStage(describeReferenceCounts(t, counts, onlyIds ? t('references.stage.retry') : '') + partialNote);
           notify(
             t('references.ready')
               .replace('{total}', String(current.length))
@@ -6477,6 +6493,8 @@ window.__ModuleLoader__.load({
             'references.mode.numbered': 'numbered list',
             'references.mode.authorYear': 'author–year list',
             'references.notFound': 'No bibliography heading or numbered list was found. Open the references page yourself, or paste the list into the text box.',
+        'references.partial': ' · the section was cut after the last citation ({lines} lines left out)',
+        'references.partialDropped': ' · {rows} numbered rows after the bibliography were not citations and were dropped',
             'references.needPaper': 'Open a PDF first: the bibliography is cached per paper.',
             'references.retry': 'Retry unfinished',
             'references.retryHint': 'Retry only the entries that are still pending, unconfirmed or temporarily failed',
@@ -6614,6 +6632,8 @@ window.__ModuleLoader__.load({
             'references.mode.numbered': '编号列表',
             'references.mode.authorYear': '作者—年份列表',
             'references.notFound': '没有找到参考文献标题，也没有识别出连续编号。可以翻到参考文献页重新触发，或把文献列表粘贴到文本框里。',
+        'references.partial': ' · 已在最后一条引文后截断（跳过 {lines} 行）',
+        'references.partialDropped': ' · 参考文献之后有 {rows} 条编号行并非引文，已丢弃',
             'references.needPaper': '请先打开一份 PDF：参考文献按论文缓存。',
             'references.retry': '重试未完成',
             'references.retryHint': '只重跑仍在等待、待确认或暂时失败的条目',

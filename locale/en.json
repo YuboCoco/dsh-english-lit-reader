@@ -195,6 +195,8 @@
   "references.mode.numbered": "numbered list",
   "references.mode.authorYear": "author–year list",
   "references.notFound": "No bibliography heading or numbered list was found. Open the references page yourself, or paste the list into the text box.",
+  "references.partial": " · the section was cut after the last citation ({lines} lines left out)",
+  "references.partialDropped": " · {rows} numbered rows after the bibliography were not citations and were dropped",
   "references.retry": "Retry unfinished",
   "references.retryHint": "Retry only the entries that are still pending, unconfirmed or temporarily failed",
   "references.retryNone": "Every entry is already resolved.",
