@@ -18,27 +18,38 @@
 
 ## 安装
 
-要求 DSH 0.2.x（`dsh.bundle` 型插件）。
+要求 **DeepSeek Harness 0.2.x**（`dsh.bundle` 型插件）。不需要 `pnpm install`——pdf.js 与 KaTeX 已按发行版打包在 `vendor/` 里，没有运行时依赖；也不需要额外 API key，用的是 Harness 已经配好的那个模型。
 
-从源码安装（当前方式）：
+### 方式一：在插件页填 Git 地址（推荐）
 
-```bash
-git clone https://github.com/YuboCoco/dsh-english-lit-reader.git
-cd dsh-english-lit-reader
+侧边栏 **Plugins** → **Add plugin**，在包名栏填入：
+
+```
+https://github.com/YuboCoco/dsh-english-lit-reader.git#5f0a6d53972041b92cf0c705be2628dee2f37a8e
 ```
 
-这个包没有运行时依赖（pdf.js 与 KaTeX 已按发行版打包在 `vendor/` 里），不需要 `pnpm install`。
+- `#` 后面是 40 位完整 commit，可省略；但**只有固定 commit 的 Git 安装才有「更新」能力**，分支 / 标签 / 版本范围会被标记为不可更新。
+- 安装后 bundle 默认被选中，会话页顶部（「对话 / 痕迹 / 上下文」那一行）出现**「文献阅读」标签页**。若没出现，重启 Harness。
+- 升级：先 **Remove**，再按新的 commit 装一次。
 
-然后用 Harness 的插件管理器把该目录作为 bundle 装进 profile——`package.json` 已声明 `dsh.bundle.patch`，管理器会读取它。装好以后**重启 Harness**，会话页顶部会多出一个「文献阅读」标签页。
+### 方式二：本地目录
 
-如果你把这类 link 安装换成版本安装：
+把仓库克隆或下载解压到任意目录，然后 **Plugins** → **Add plugin** → 填该目录的**绝对路径**。
+
+这是在 GitHub 不可达时唯一可行的手工方式——国内镜像只代理 npm 包，不代理 GitHub 仓库本身。
+
+### 方式三：命令行
 
 ```bash
-# 在 DSH 的 profile 目录里
-pnpm add github:YuboCoco/dsh-english-lit-reader
+dsh plugin --profile <profile> add github:YuboCoco/dsh-english-lit-reader#<40 位 commit>
 ```
 
-> npm 上暂未发布，所以暂时不能 `pnpm add dsh-english-lit-reader`，也不能在「设置 → 插件」里按名字搜索到。发布后这段会更新。
+之后在 profile 里启用该 bundle。注意 npm 版 CLI 拒绝对 `desktop` profile 做插件管理，需要用 Desktop 自带的命令。
+
+### 关于 npm 与插件市场
+
+- npm 上**尚未发布**，所以不能 `pnpm add dsh-english-lit-reader`，也不能在 **Add plugin** 里只填包名。
+- 已向插件市场提交（awesome-dsh-plugin，PR #16773，CI 已通过），维护者合并后即可在 **Discover** 里按名字找到。
 
 ## 三个入口
 
