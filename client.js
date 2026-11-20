@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
     const PDFCSS_ID = 'english-lit-reader-pdfcss';
     const KATEXCSS_ID = 'english-lit-reader-katexcss';
     // Cache-buster: a stale browser bundle may still point at the old asset set.
-    const ASSET_V = '?v=1.0.53';
+    const ASSET_V = '?v=1.0.67';
     const asset = (name) => VENDOR + name + ASSET_V;
     let planningPromise = null;
     const loadPaperPlanning = () => {

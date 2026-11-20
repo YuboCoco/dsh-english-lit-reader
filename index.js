@@ -195,7 +195,7 @@ const TITLE_QUALIFIERS = new Set([
 // Both services ask clients to identify themselves. A real mailto puts us in the
 // polite pool, which is the difference between steady 200s and a wall of 429s.
 const RESOLVER_MAILTO = "584628900@qq.com";
-const CROSSREF_AGENT = "dsh-english-lit-reader/1.0.52 (https://github.com/YuboCoco/dsh-english-lit-reader; mailto:" + RESOLVER_MAILTO + ")";
+const CROSSREF_AGENT = "dsh-english-lit-reader/1.0.67 (https://github.com/YuboCoco/dsh-english-lit-reader; mailto:" + RESOLVER_MAILTO + ")";
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
