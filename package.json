@@ -1,6 +1,6 @@
 {
   "name": "dsh-english-lit-reader",
-  "version": "1.0.53",
+  "version": "1.0.67",
   "type": "module",
   "description": "Read English papers in DeepSeek Harness with instant selection translation, structured summaries of innovations and technical approach, resolved references, formula and term explanations.",
   "keywords": [
@@ -32,6 +32,8 @@
   },
   "files": [
     "index.js",
+    "paper-planning.js",
+    "paper-analysis.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
